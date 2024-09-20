@@ -92,6 +92,39 @@ Alternatively, you may install the package from [PyPi](https://pypi.org) (may be
 pip install utime
 ```
 
+### Cuda Installation Guide
+
+The following NVIDIA software are only required for GPU support:
+
+* CUDA Toolkit 11.2
+* cuDNN SDK 8.1
+
+If not installed:
+
+```
+conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
+```
+
+If you encounter the following error:
+
+```
+Can't find libdevice directory ${CUDA_DIR}/nvvm/libdevice.
+```
+
+You will need to run the following commands:
+
+```
+# Install NVCC
+conda install -c nvidia cuda-nvcc=11.3.58
+# Configure the XLA cuda directory
+mkdir -p $CONDA_PREFIX/etc/conda/activate.d
+printf 'export XLA_FLAGS=--xla_gpu_cuda_data_dir=$CONDA_PREFIX/lib/\n' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+source $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+# Copy libdevice file to the required path
+mkdir -p $CONDA_PREFIX/lib/nvvm/libdevice
+cp $CONDA_PREFIX/lib/libdevice.10.bc $CONDA_PREFIX/lib/nvvm/libdevice/
+```
+
 ## Demo
 In this following we will demonstrate how to launch a short training session of U-Sleep on a significantly limited subset of the datasets used in [[2]](#usleep_ref).
 
@@ -293,6 +326,30 @@ This will apply all preprocessing, create a data archive suitable for streaming,
 
 Due to the vast size of the dataset considered, training U-Sleep with the default parameters may take very long. 
 We suggest increasing the learning rate (from the current `1e-7` to e.g. `1e-6`) unless you are looking to re-create U-Sleep under the exact conditions considered in [[2]](#usleep_ref).
+
+## Train on ZMax Datasets
+
+You should take the following steps:
+
+1) Prepare the datasets as specified for each dataset separately in files under the folder `resources/usleep_dataset_pred/zmax` of this repository. These commands will extract and place data into a folder-structure and format that U-Time accepts, as well as split the data into subsets.
+
+2) Initialize a U-Sleep project: 
+```
+ut init --name usleep_zmax \
+        --model [model_name] \
+        --data_dir [path_to_fix_split_directory]`
+```
+where `[model_name]` is one of `utime` or `usleep` or `deepsleepnet`, `[path_to_fix_split_directory]` is the path to the directory containing the split files.
+
+3) This will create `hparams.yaml` which hold the hyperparameters for the training process and `dataset_configurations/zmax.yaml` which for the dataset configuration.
+4) Preprocess the data:
+```
+ut preprocess --out_path data/processed_data.h5 --dataset_splits train_data val_data
+``` 
+5) Train the model:
+```
+ut train --num_gpus=1 --preprocessed --seed 123
+```
 
 ## U-Time Example
 You can still use this repository to train the older U-Time model. 
