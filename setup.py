@@ -1,3 +1,4 @@
+import sys
 from setuptools import setup, find_packages
 
 with open('README.md') as readme_file:
@@ -8,6 +9,10 @@ with open('HISTORY.rst') as history_file:
 
 with open("requirements.txt") as req_file:
     requirements = list(filter(None, req_file.read().split("\n")))
+    
+if sys.platform == "darwin":
+    requirements = [req for req in requirements if not req.startswith("tensorflow") or req.startswith("tensorflow-addons")]
+    requirements.append("tensorflow-macos>=2.10.0, <2.11")
 
 __version__ = None
 with open("utime/version.py") as version_file:

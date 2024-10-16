@@ -13,4 +13,6 @@ scikit-learn>=1.0.2
 requests>=2.27.1
 carbontracker>=1.1.6
 psg_utils>=0.1.6
+tensorflow>=2.10.0, <2.11
+tensorflow-addons>=0.16.1
 yamlhparams>=0.2.0
