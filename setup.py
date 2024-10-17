@@ -8,11 +8,7 @@ with open('HISTORY.rst') as history_file:
     history = history_file.read().replace('.. :changelog:', '')
 
 with open("requirements.txt") as req_file:
-    requirements = list(filter(None, req_file.read().split("\n")))
-    
-if sys.platform == "darwin":
-    requirements = [req for req in requirements if not req.startswith("tensorflow") or req.startswith("tensorflow-addons")]
-    requirements.append("tensorflow-macos>=2.10.0, <2.11")
+    requirements = [line.strip() for line in req_file if line.strip()]
 
 __version__ = None
 with open("utime/version.py") as version_file:
