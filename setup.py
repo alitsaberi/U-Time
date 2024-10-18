@@ -1,3 +1,4 @@
+import sys
 from setuptools import setup, find_packages
 
 with open('README.md') as readme_file:
@@ -7,7 +8,7 @@ with open('HISTORY.rst') as history_file:
     history = history_file.read().replace('.. :changelog:', '')
 
 with open("requirements.txt") as req_file:
-    requirements = list(filter(None, req_file.read().split("\n")))
+    requirements = [line.strip() for line in req_file if line.strip()]
 
 __version__ = None
 with open("utime/version.py") as version_file:
