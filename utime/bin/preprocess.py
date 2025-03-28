@@ -30,6 +30,8 @@ from psg_utils.time_utils import TimeUnit
 
 logger = logging.getLogger(__name__)
 
+EEG_CHANNEL_NAME = "EEG"
+
 
 def get_argparser():
     """
@@ -52,6 +54,10 @@ def get_argparser():
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is 'preprocessing'")
+    parser.add_argument("--eeg_channels", nargs='*', default=None,
+                        help="List of EEG channels to process.")
+    parser.add_argument("--apply_artifact_detection", action='store_true',
+                        help="Enable artifact detection on EEG channels.")
     return parser
 
 
@@ -78,6 +84,12 @@ def add_dataset_entry(hparams_out_path, h5_path,
         out_f.write(field)
 
 
+def update_labels_with_artifacts(y, artifact_labels):
+    return y
+
+def run_artifact_detection(X):
+    return X
+
 def preprocess_study(h5_file_group, study):
     """
     TODO
@@ -91,6 +103,7 @@ def preprocess_study(h5_file_group, study):
     """
     # Create groups
     study_group = h5_file_group.create_group(study.identifier)
+
     psg_group = study_group.create_group("PSG")
     with study.loaded_in_context(allow_missing_channels=True):
         X, y = study.get_all_periods()
@@ -115,6 +128,54 @@ def preprocess_study(h5_file_group, study):
         study_group.attrs['sample_rate'] = study.sample_rate
 
 
+def preprocess_study_with_artifact_detection(h5_file_group, study, eeg_channels):
+    """
+    Preprocess a study and create datasets for selected EEG channels while keeping all non-EEG channels,
+    applying artifact detection to the selected EEG channels.
+
+    Args:
+        h5_file_group:
+        study:
+        selected_channels: List of channels to process.
+
+    Returns:
+        None
+    """
+    # Create groups for each selected EEG channel
+    for eeg_channel_name in eeg_channels:
+        study_group = h5_file_group.create_group(f"{study.identifier}_{eeg_channel_name}")
+
+        psg_group = study_group.create_group("PSG")
+        with study.loaded_in_context(allow_missing_channels=True):
+            X, y = study.get_all_periods()
+            
+            # Create PSG datasets for the selected EEG channel and all non-EEG channels
+            for chan_ind, channel in enumerate(study.select_channels):
+                if channel.original_name == eeg_channel_name or channel not in eeg_channels:  # Check if it's an EEG channel
+                    psg_group.create_dataset(EEG_CHANNEL_NAME,
+                                             data=X[..., chan_ind].ravel())
+           
+
+            # Run artifact detection for the selected channel
+            selected_chan_ind = study.select_channels.index(eeg_channel_name)
+            artifact_labels = run_artifact_detection(X[..., selected_chan_ind])
+            y = update_labels_with_artifacts(y, artifact_labels)
+            study_group.create_dataset("hypnogram", data=y)
+
+            # Create class --> index lookup groups
+            cls_to_indx_group = study_group.create_group('class_to_index')
+            dtype = np.dtype('uint16') if len(y) <= 65535 else np.dtype('uint32')
+            classes = study.hypnogram.classes
+            for class_ in classes:
+                inds = np.where(y == class_)[0].astype(dtype)
+                cls_to_indx_group.create_dataset(
+                    str(class_), data=inds
+                )
+
+            # Set attributes, currently only sample rate is (/may be) used
+            study_group.attrs['sample_rate'] = study.sample_rate
+
+
 def run(args):
     """
     Run the script according to args - Please refer to the argparser.
@@ -122,6 +183,11 @@ def run(args):
     args:
         args:    (Namespace)  command-line arguments
     """
+
+    if args.apply_artifact_detection and args.eeg_channels is None:
+        raise ValueError("Must specify EEG channels to process when "
+                         "applying artifact detection.")
+
     project_dir = os.path.abspath("./")
     assert_project_folder(project_dir)
     logger.info(f"Args dump: {vars(args)}")
@@ -190,7 +256,10 @@ def run(args):
                     split_group = h5_file.create_group(split.identifier)
 
                     # Run the preprocessing
-                    process_func = partial(preprocess_study, split_group)
+                    if args.apply_artifact_detection:
+                        process_func = partial(preprocess_study_with_artifact_detection, split_group, args.eeg_channels)
+                    else:
+                        process_func = partial(preprocess_study, split_group)
 
                     logger.info(f"Preprocessing dataset: {split}")
                     n_pairs = len(split.pairs)
