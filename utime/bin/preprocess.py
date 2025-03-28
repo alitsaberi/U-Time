@@ -175,6 +175,24 @@ def preprocess_study_with_artifact_detection(h5_file_group, study, eeg_channels)
             # Set attributes, currently only sample rate is (/may be) used
             study_group.attrs['sample_rate'] = study.sample_rate
 
+def update_channel_sampling_groups(hparams, eeg_channels):
+    channel_sampling_groups = hparams.get_group("channel_sampling_groups")
+    found_subset = False
+
+    for group_channels in channel_sampling_groups:
+        if set(eeg_channels).issubset(set(group_channels)):
+            logger.info(f"'{eeg_channels}' is a subset of the group '{group_channels}'.")
+            found_subset = True
+            # Replace the found group with ["EEG"] while keeping other groups
+            channel_sampling_groups.remove(group_channels)
+            channel_sampling_groups.append([EEG_CHANNEL_NAME])
+            break  # Ex
+        
+    hparams.set_group("channel_sampling_groups", channel_sampling_groups)
+
+    if not found_subset:
+        raise ValueError(f"No group found in 'channel_sampling_groups' that '{eeg_channels}' is a subset of.")
+
 
 def run(args):
     """
@@ -221,6 +239,10 @@ def run(args):
                 # that contain only the fields needed for pre-processed data
                 name = dataset[0].identifier.split("/")[0]
                 hparams_out_path = os.path.join(out_dir, name + ".yaml")
+
+                if args.apply_artifact_detection:
+                    update_channel_sampling_groups(dataset_hparams, args.eeg_channels)
+
                 copy_dataset_hparams(dataset_hparams, hparams_out_path)
 
                 # Update paths to dataset hparams in main hparams file
@@ -236,10 +258,18 @@ def run(args):
                 # Process each dataset
                 for split in dataset:
                     # Add this split to the dataset-specific hparams
+
+                    period_length = split.pairs[0].get_period_length_in(TimeUnit.SECOND)
+
+                    if args.apply_artifact_detection and period_length != 10:
+                        raise ValueError(
+                            "Artifact detection is only supported for 10-second periods."
+                        )
+
                     add_dataset_entry(hparams_out_path,
                                       args.out_path,
                                       split.identifier.split("/")[-1].lower(),
-                                      split.pairs[0].get_period_length_in(TimeUnit.SECOND))
+                                      period_length)
 
                     # Overwrite potential load time channel sampler to None
                     channel_sampling_groups = dataset_hparams.get('channel_sampling_groups')
