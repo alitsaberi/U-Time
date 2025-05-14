@@ -17,6 +17,7 @@ This script should be called form within a U-Time project directory
 
 import logging
 import os
+from pathlib import Path
 import numpy as np
 import h5py
 from argparse import ArgumentParser
@@ -27,10 +28,13 @@ from utime.utils import flatten_lists_recursively
 from utime.hyperparameters import YAMLHParams
 from utime.utils.scriptutils import assert_project_folder, get_splits_from_all_datasets, add_logging_file_handler
 from psg_utils.time_utils import TimeUnit
+from scipy.stats import mode
 
 logger = logging.getLogger(__name__)
 
 EEG_CHANNEL_NAME = "EEG"
+USABILITY_SCORES_FILE_NAME_TEMPLATE = "{}_usability_scores.npy"
+EEG_CHANNELS = ["F7-Fpz", "F8-Fpz"] # left and right channels
 
 
 def get_argparser():
@@ -54,10 +58,10 @@ def get_argparser():
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is 'preprocessing'")
-    parser.add_argument("--eeg_channels", nargs='*', default=None,
-                        help="List of EEG channels to process.")
-    parser.add_argument("--apply_artifact_detection", action='store_true',
-                        help="Enable artifact detection on EEG channels.")
+    parser.add_argument("--usability_scores_dir", type=Path, default=None,
+                        help="Path to directory containing usability scores to apply artifact detection.")
+    parser.add_argument("--unusable_label", type=str, default="UNKNOWN",
+                        help="Label to use for unusable data.")
     return parser
 
 
@@ -84,8 +88,33 @@ def add_dataset_entry(hparams_out_path, h5_path,
         out_f.write(field)
 
 
-def update_labels_with_artifacts(y, artifact_labels):
-    return y
+def update_labels_with_usability_scores(
+    y: np.ndarray,
+    usability_scores: np.ndarray,
+    unusable_label: str
+) -> np.ndarray:    
+    
+    if y.size == 0 or usability_scores.size == 0:
+        raise ValueError("Input arrays cannot be empty")
+    
+    scaling_factor = len(usability_scores) / len(y)
+    if len(usability_scores) != len(y) * scaling_factor:
+        raise ValueError(
+            f"Mismatch between label length ({len(y)}) and usability scores length "
+            f"({len(usability_scores)}) with scaling factor {scaling_factor}"
+        )
+    
+    # Reshape usability scores into chunks and compute mode
+    usability_scores_reshaped = usability_scores.reshape(-1, scaling_factor)
+    usability_scores_modes = mode(usability_scores_reshaped, axis=1, keepdims=False)[0]
+    
+    # Create copy to avoid modifying input array
+    y_updated = y.copy()
+    
+    # Apply usability mask (0 = unusable, anything else = usable)
+    y_updated = np.where(usability_scores_modes != 0, y_updated, unusable_label)
+    
+    return y_updated
 
 def run_artifact_detection(X):
     return X
@@ -128,7 +157,7 @@ def preprocess_study(h5_file_group, study):
         study_group.attrs['sample_rate'] = study.sample_rate
 
 
-def preprocess_study_with_artifact_detection(h5_file_group, study, eeg_channels):
+def preprocess_study_with_usability_scores(h5_file_group, study, eeg_channels: list[str], usability_scores_dir: Path, unusable_label: str):
     """
     Preprocess a study and create datasets for selected EEG channels while keeping all non-EEG channels,
     applying artifact detection to the selected EEG channels.
@@ -141,9 +170,13 @@ def preprocess_study_with_artifact_detection(h5_file_group, study, eeg_channels)
     Returns:
         None
     """
+
+    usability_scores_path = usability_scores_dir / USABILITY_SCORES_FILE_NAME_TEMPLATE.format(study.identifier)
+    all_usability_scores = np.load(usability_scores_path)
     # Create groups for each selected EEG channel
-    for eeg_channel_name in eeg_channels:
+    for i, eeg_channel_name in enumerate(EEG_CHANNELS):
         study_group = h5_file_group.create_group(f"{study.identifier}_{eeg_channel_name}")
+        usability_scores = all_usability_scores[:, i]
 
         psg_group = study_group.create_group("PSG")
         with study.loaded_in_context(allow_missing_channels=True):
@@ -151,15 +184,13 @@ def preprocess_study_with_artifact_detection(h5_file_group, study, eeg_channels)
             
             # Create PSG datasets for the selected EEG channel and all non-EEG channels
             for chan_ind, channel in enumerate(study.select_channels):
-                if channel.original_name == eeg_channel_name or channel not in eeg_channels:  # Check if it's an EEG channel
+                if channel.original_name == eeg_channel_name or channel not in EEG_CHANNELS:  # Check if it's an EEG channel
                     psg_group.create_dataset(EEG_CHANNEL_NAME,
                                              data=X[..., chan_ind].ravel())
            
 
             # Run artifact detection for the selected channel
-            selected_chan_ind = study.select_channels.index(eeg_channel_name)
-            artifact_labels = run_artifact_detection(X[..., selected_chan_ind])
-            y = update_labels_with_artifacts(y, artifact_labels)
+            y = update_labels_with_usability_scores(y, usability_scores, unusable_label)
             study_group.create_dataset("hypnogram", data=y)
 
             # Create class --> index lookup groups
@@ -202,7 +233,7 @@ def run(args):
         args:    (Namespace)  command-line arguments
     """
 
-    if args.apply_artifact_detection and args.eeg_channels is None:
+    if args.usability_scores_dir is not None and args.eeg_channels is None:
         raise ValueError("Must specify EEG channels to process when "
                          "applying artifact detection.")
 
@@ -241,7 +272,7 @@ def run(args):
                 hparams_out_path = os.path.join(out_dir, name + ".yaml")
 
                 if args.apply_artifact_detection:
-                    update_channel_sampling_groups(dataset_hparams, args.eeg_channels)
+                    update_channel_sampling_groups(dataset_hparams, EEG_CHANNELS)
 
                 copy_dataset_hparams(dataset_hparams, hparams_out_path)
 
@@ -260,11 +291,6 @@ def run(args):
                     # Add this split to the dataset-specific hparams
 
                     period_length = split.pairs[0].get_period_length_in(TimeUnit.SECOND)
-
-                    if args.apply_artifact_detection and period_length != 10:
-                        raise ValueError(
-                            "Artifact detection is only supported for 10-second periods."
-                        )
 
                     add_dataset_entry(hparams_out_path,
                                       args.out_path,
@@ -287,7 +313,7 @@ def run(args):
 
                     # Run the preprocessing
                     if args.apply_artifact_detection:
-                        process_func = partial(preprocess_study_with_artifact_detection, split_group, args.eeg_channels)
+                        process_func = partial(preprocess_study_with_usability_scores, split_group, EEG_CHANNELS, args.usability_scores_dir, args.unusable_label)
                     else:
                         process_func = partial(preprocess_study, split_group)
 
