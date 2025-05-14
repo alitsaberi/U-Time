@@ -337,7 +337,7 @@ You should take the following steps:
 ```
 ut init --name usleep_zmax \
         --model [model_name] \
-        --data_dir [path_to_fix_split_directory]`
+        --data_dir [path_to_fix_split_directory]
 ```
 where `[model_name]` is one of `utime` or `usleep` or `deepsleepnet`, `[path_to_fix_split_directory]` is the path to the directory containing the split files.
 
