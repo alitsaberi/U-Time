@@ -2,7 +2,7 @@
 
 #### Extract command
 ```
-ut extract --file_regex '[LOCAL_PATH]/physionet-2018-challenge/tr*/*.mat' --out_dir [LOCAL_PATH]/processed/phys/ --resample 128 --channels F3-M2 F4-M1 C3-M2 C4-M1 O1-M2 O2-M1 E1-M2
+ut extract --file_regex '[LOCAL_PATH]/physionet-2018-challenge/tr*/tr??-????.mat' --out_dir [LOCAL_PATH]/processed/phys/ --resample 128 --channels F3-M2 F4-M1 C3-M2 C4-M1 O1-M2 O2-M1 E1-M2
 ```
 
 #### Extract hypno command
