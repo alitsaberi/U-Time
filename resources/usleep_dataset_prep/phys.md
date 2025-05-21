@@ -10,7 +10,7 @@ ut extract --file_regex '[LOCAL_PATH]/physionet-2018-challenge/tr*/tr??-????.mat
 ut extract_hypno --file_regex '[LOCAL_PATH]/physionet-2018-challenge/tr*/*HYP.ids' --out_dir '[LOCAL_PATH]/processed/phys/'
 ```
 
-#### Extract hypno command
+#### Extract arousal command
 ```
 ut extract_arousal --file-regex './phys/training/tr*/*-arousal.mat' --out-dir './processed/phys/' --fill-blanks unscored --extract-func utime.datasets.phys.extract_arousal'
 ```

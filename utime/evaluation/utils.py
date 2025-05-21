@@ -11,6 +11,7 @@ def ignore_out_of_bounds_classes_wrapper(func):
     For a model that outputs 'n_pred_classes' classes, this wrapper removes entries in the
     true/pred pairs for which the true label is not in the range [0, 1, ..., n_pred_classes - 1].
     'n_pred_classes' is determined as the length of the prediction tensor on the last dimension.
+    For binary classification (n_pred_classes=1), predictions are expected to be in [0,1] range.
     """
     @wraps(func)
     @tf.function
@@ -18,7 +19,7 @@ def ignore_out_of_bounds_classes_wrapper(func):
         true.set_shape(pred.get_shape()[:-1] + [1])
         n_pred_classes = pred.get_shape()[-1]
         true = tf.reshape(true, [-1])
-        pred = tf.reshape(pred, [-1, n_pred_classes])
+        pred = tf.reshape(pred, [-1, n_pred_classes] if n_pred_classes > 1 else [-1])
         mask = tf.where(tf.logical_and(
                             tf.greater_equal(true, 0),
                             tf.less(true, n_pred_classes)

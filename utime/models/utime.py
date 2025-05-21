@@ -275,7 +275,7 @@ class UTime(Model):
                      name="{}sequence_conv_out_1".format(name_prefix))(cls)
         out = Conv2D(filters=n_classes,
                      kernel_size=(transition_window, 1),
-                     activation="softmax",
+                     activation="softmax" if n_classes > 1 else "sigmoid",
                      kernel_regularizer=regularizer,
                      bias_regularizer=regularizer,
                      padding="same",
@@ -283,8 +283,7 @@ class UTime(Model):
         s = [-1, n_periods, input_dims//data_per_period, n_classes]
         if s[2] == 1:
             s.pop(2)  # Squeeze the dim
-        out = Lambda(lambda x: tf.reshape(x, s),
-                     name="{}sequence_classification_reshaped".format(name_prefix))(out)
+        out = tf.reshape(out, s)
         return out
 
     def init_model(self, inputs=None, name_prefix=""):
