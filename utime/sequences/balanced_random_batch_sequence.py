@@ -57,6 +57,7 @@ class BalancedRandomBatchSequence(BatchSequence):
                          require_all_loaded=False,
                          **kwargs)
         self.sample_prob = sample_prob
+        self.n_labels = self.n_classes if self.n_classes > 1 else 2
         if not no_log:
             self.log()
 
@@ -77,7 +78,7 @@ class BalancedRandomBatchSequence(BatchSequence):
     @property
     def sample_prob(self):
         """ Returns the current class sampling probability vector """
-        return self._sample_prob or [1.0/self.n_classes]*self.n_classes
+        return self._sample_prob or [1.0/self.n_labels]*self.n_labels
 
     @sample_prob.setter
     def sample_prob(self, values):
@@ -92,9 +93,9 @@ class BalancedRandomBatchSequence(BatchSequence):
             self._sample_prob = None
         else:
             if not isinstance(values, (list, tuple, np.ndarray)) or \
-                    len(values) != self.n_classes:
+                    len(values) != self.n_labels:
                 raise ValueError(f"'sample_prob' should be an array of"
-                                 f" length n_classes={self.n_classes}. "
+                                 f" length n_labels={self.n_labels}. "
                                  f"Got {values} (type {type(values)})")
             self._sample_prob = np.array(values)
             self._sample_prob /= np.sum(self._sample_prob)  # sum 1
@@ -125,7 +126,7 @@ class BalancedRandomBatchSequence(BatchSequence):
                of integer label values if margin >0
         """
         # Get random class according to the sample probs.
-        classes = np.arange(self.n_classes)
+        classes = np.arange(self.n_labels)
         cls = np.random.choice(classes, size=1, p=self.sample_prob)[0]
         tries, max_tries = 0, 1000
         while tries < max_tries:
