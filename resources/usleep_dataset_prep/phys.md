@@ -10,6 +10,11 @@ ut extract --file_regex '[LOCAL_PATH]/physionet-2018-challenge/tr*/tr??-????.mat
 ut extract_hypno --file_regex '[LOCAL_PATH]/physionet-2018-challenge/tr*/*HYP.ids' --out_dir '[LOCAL_PATH]/processed/phys/'
 ```
 
+#### Extract hypno command
+```
+ut extract_arousal --file-regex './phys/training/tr*/*-arousal.mat' --out-dir './processed/phys/' --fill-blanks unscored --extract-func utime.datasets.phys.extract_arousal'
+```
+
 #### Views command
 ```
 ut cv_split --data_dir '[LOCAL_PATH]/processed/phys/ --subject_dir_pattern 'tr*' --CV 1 --validation_fraction 0.10 --max_validation_subjects 50 --test_fraction 0.15 --max_test_subjects 100

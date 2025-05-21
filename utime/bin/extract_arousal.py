@@ -16,7 +16,7 @@ DEFAULT_PERIOD_LENGTH = 5
 def get_argparser():
     parser = ArgumentParser(description='Extract arousal annotations from various file formats.')
     parser.add_argument("--file-regex", type=str, required=True, help='A glob statement matching all files to extract from')
-    parser.add_argument("--out_dir", type=str, required=True, help="Directory in which extracted files will be stored")
+    parser.add_argument("--out-dir", type=str, required=True, help="Directory in which extracted files will be stored")
     parser.add_argument("--period-length", type=int, default=DEFAULT_PERIOD_LENGTH, help="Period length in seconds")
     parser.add_argument("--fill-blanks", type=str, help="A string value to use for gaps, e.g. 'UNKNOWN' or 'unscored', etc.")
     parser.add_argument("--extract-func", type=str, required=True, help="Path to the function to use for extraction")
