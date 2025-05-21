@@ -48,7 +48,7 @@ class Validation(Callback):
 
     def _compute_counts(self, pred, true):
         # Argmax and CM elements
-        pred = pred.argmax(-1).ravel() if self.n_classes > 1 else (pred > 0.5).astype(int).ravel()
+        pred = pred.argmax(-1).ravel() if self.n_classes > 2 else (pred > 0.5).astype(int).ravel()
         true = true.ravel()
 
         # True array may include negative or non-negative integers larger than n_classes, e.g. int class 5 "UNKNOWN"

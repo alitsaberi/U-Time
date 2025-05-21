@@ -321,9 +321,9 @@ class USleep(Model):
                      padding="same",
                      name="{}sequence_conv_out_1".format(name_prefix),
                      **other_conv_params)(cls)
-        out = Conv2D(filters=n_classes,
+        out = Conv2D(filters=n_classes if n_classes > 2 else 1,
                      kernel_size=(transition_window, 1),
-                     activation="softmax" if n_classes > 1 else "sigmoid",
+                     activation="softmax" if n_classes > 2 else "sigmoid",
                      kernel_regularizer=regularizer,
                      bias_regularizer=regularizer,
                      padding="same",

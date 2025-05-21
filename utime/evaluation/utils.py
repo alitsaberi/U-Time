@@ -19,7 +19,7 @@ def ignore_out_of_bounds_classes_wrapper(func):
         true.set_shape(pred.get_shape()[:-1] + [1])
         n_pred_classes = pred.get_shape()[-1]
         true = tf.reshape(true, [-1])
-        pred = tf.reshape(pred, [-1, n_pred_classes] if n_pred_classes > 1 else [-1])
+        pred = tf.reshape(pred, [-1, n_pred_classes] if n_pred_classes > 2 else [-1])
         mask = tf.where(tf.logical_and(
                             tf.greater_equal(true, 0),
                             tf.less(true, n_pred_classes)

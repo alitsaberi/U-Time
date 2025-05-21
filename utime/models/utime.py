@@ -273,14 +273,14 @@ class UTime(Model):
                      bias_regularizer=regularizer,
                      padding="same",
                      name="{}sequence_conv_out_1".format(name_prefix))(cls)
-        out = Conv2D(filters=n_classes,
+        out = Conv2D(filters=n_classes if n_classes > 2 else 1,
                      kernel_size=(transition_window, 1),
-                     activation="softmax" if n_classes > 1 else "sigmoid",
+                     activation="softmax" if n_classes > 2 else "sigmoid",
                      kernel_regularizer=regularizer,
                      bias_regularizer=regularizer,
                      padding="same",
                      name="{}sequence_conv_out_2".format(name_prefix))(out)
-        s = [-1, n_periods, input_dims//data_per_period, n_classes]
+        s = [-1, n_periods, input_dims//data_per_period, n_classes if n_classes > 2 else 1]
         if s[2] == 1:
             s.pop(2)  # Squeeze the dim
         out = tf.reshape(out, s)
