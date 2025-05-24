@@ -105,7 +105,7 @@ def _init_losses_or_metrics(list_of_losses_or_metrics, ignore_out_of_bounds_clas
                 # Wrap a specific method on the class
                 if not hasattr(func_or_cls, wrap_method_name):
                     raise AttributeError(f"Cannot wrap method of name '{wrap_method_name}' on "
-                                         f"class '{func_or_cls}'. Class hos n such attribute.")
+                                         f"class '{func_or_cls}'. Class hos no such attribute.")
                 wrapped = ignore_out_of_bounds_classes_wrapper(getattr(func_or_cls, wrap_method_name))
                 setattr(func_or_cls, wrap_method_name, wrapped)
             else:

@@ -12,7 +12,7 @@ ut extract_hypno --file_regex '[LOCAL_PATH]/physionet-2018-challenge/tr*/*HYP.id
 
 #### Extract arousal command
 ```
-ut extract_arousal --file-regex './phys/training/tr*/*-arousal.mat' --out-dir './processed/phys/' --fill-blanks unscored --extract-func utime.datasets.phys.extract_arousal'
+ut extract_arousal --file-regex './phys/training/tr*/*-arousal.mat' --out-dir './processed/phys/' --fill-blanks unscored --extract-func utime.datasets.phys.extract_arousal --period-length 3
 ```
 
 #### Views command
