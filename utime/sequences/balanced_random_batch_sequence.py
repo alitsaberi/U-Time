@@ -77,7 +77,7 @@ class BalancedRandomBatchSequence(BatchSequence):
     @property
     def sample_prob(self):
         """ Returns the current class sampling probability vector """
-        return self._sample_prob or [1.0/self.n_classes]*self.n_classes
+        return self._sample_prob if self._sample_prob is not None else [1.0/self.n_classes]*self.n_classes
 
     @sample_prob.setter
     def sample_prob(self, values):
