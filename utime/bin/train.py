@@ -256,7 +256,7 @@ def run(args):
         parameter_file = args.initialize_from  # most often is None
 
     # Set the GPU visibility
-    num_gpus = find_and_set_gpus(args.num_gpus, args.force_gpus)
+    num_gpus = find_and_set_gpus(args.num_gpus, args.force_gpus) if args.num_gpus > 0 and args.force_gpus else args.num_gpus
     gpus = [g.name.replace("physical_device", "device") for g in tf.config.list_physical_devices('GPU')]
     assert len(gpus) == num_gpus, "Unexpected difference in number of visible and requested GPUs."
     # Initialize and potential load parameters into the model
