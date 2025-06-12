@@ -11,14 +11,15 @@ def ignore_out_of_bounds_classes_wrapper(func):
     For a model that outputs 'n_pred_classes' classes, this wrapper removes entries in the
     true/pred pairs for which the true label is not in the range [0, 1, ..., n_pred_classes - 1].
     'n_pred_classes' is determined as the length of the prediction tensor on the last dimension.
+    For binary classification (n_pred_classes=1), predictions are expected to be in [0,1] range.
     """
     @wraps(func)
     @tf.function
     def wrapper(true, pred, **kwargs):
         true.set_shape(pred.get_shape()[:-1] + [1])
-        n_pred_classes = pred.get_shape()[-1]
+        n_pred_classes = max(pred.get_shape()[-1], 2)
         true = tf.reshape(true, [-1])
-        pred = tf.reshape(pred, [-1, n_pred_classes])
+        pred = tf.reshape(pred, [-1, n_pred_classes] if n_pred_classes > 2 else [-1])
         mask = tf.where(tf.logical_and(
                             tf.greater_equal(true, 0),
                             tf.less(true, n_pred_classes)
@@ -28,7 +29,13 @@ def ignore_out_of_bounds_classes_wrapper(func):
         mask = tf.cast(mask, tf.bool)
         true = tf.boolean_mask(true, mask, axis=0)
         pred = tf.boolean_mask(pred, mask, axis=0)
-        return func(true, pred, **kwargs)
+        #Call the original function with masked tensors
+        result = func(true, pred, **kwargs)
+        
+        # If the result is an Operation, return None to satisfy tf.function requirements
+        if isinstance(result, tf.Operation):
+            return None
+        return result
     logger.info(f"Wrapping loss/metric function '{func}' to ignore 'true' "
                 f"classes with integer values outside of the model prediction integer range "
                 f"(e.g., ignoring true class labels of value 5 or -1 if n_classes=5, "

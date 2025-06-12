@@ -14,6 +14,7 @@ from utime import Defaults
 from utime.evaluation import concatenate_true_pred_pairs
 from utime.evaluation import (f1_scores_from_cm, precision_scores_from_cm,
                               recall_scores_from_cm)
+from utime.evaluation.plotting import plot_and_save_cm
 from utime.utils.scriptutils import add_logging_file_handler
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ def get_argparser():
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is None (no log file)")
+    parser.add_argument("--save_cm_path", type=str, default=None,
+                        help="Path to save the confusion matrix plot. If not provided, no plot will be saved.")
     return parser
 
 
@@ -112,7 +115,8 @@ def glob_to_metrics_df(true_pattern: str,
                        normalized: bool = False,
                        round: int = 3,
                        period_length_sec: int = 30,
-                       show_pairs: bool = False):
+                       show_pairs: bool = False,
+                       save_cm_path: str = None):
     """
     Run the script according to 'args' - Please refer to the argparser.
     """
@@ -161,6 +165,8 @@ def glob_to_metrics_df(true_pattern: str,
         labels = list((set(np.unique(true)) | set(np.unique(pred))) - set(ignore_classes))
         logger.info(f"OBS: Ignoring class(es): {ignore_classes} / {[mapping[i] for i in ignore_classes]}. "
                     f"I.e., only epochs with true labels in {labels} / {[mapping[i] for i in labels]} will be considered.")
+        for i in ignore_classes:
+            del mapping[i]
 
     if group_non_rem:
         ones = np.ones_like(true)
@@ -185,6 +191,14 @@ def glob_to_metrics_df(true_pattern: str,
     if normalized:
         cm = cm.astype(np.float64)
         cm /= cm.sum(axis=1, keepdims=True)
+
+    # Plot and save confusion matrix if path is provided
+    if save_cm_path:
+        os.makedirs(os.path.dirname(save_cm_path), exist_ok=True)
+        plot_and_save_cm(out_path=save_cm_path,
+                        cm=cm,
+                        mapping=mapping,
+                        normalize=normalized)
 
     # Pretty print
     cm = pd.DataFrame(data=cm,
@@ -222,7 +236,8 @@ def entry_func(args=None):
         normalized=args.normalized,
         round=args.round,
         period_length_sec=args.period_length_sec,
-        show_pairs=args.show_pairs
+        show_pairs=args.show_pairs,
+        save_cm_path=args.save_cm_path
     )
 
 

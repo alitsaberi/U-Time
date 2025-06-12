@@ -1,3 +1,4 @@
+import importlib
 import logging
 import os
 import subprocess
@@ -78,3 +79,18 @@ def _wait_for(pid, check_every=120):
         if still_running:
             logging.info(f"Process {pid} still running... (sleeping {check_every} seconds)")
             time.sleep(check_every)
+
+def load_function_from_string(function_path):
+    """
+    Load a function from a string path like 'utime.datasets.phys.extract_arousal'
+    
+    Args:
+        function_path (str): The full path to the function (e.g. 'utime.datasets.phys.extract_arousal')
+        
+    Returns:
+        The loaded function
+    """
+    # Split the path into module path and function name
+    module_path, function_name = function_path.rsplit('.', 1)
+    module = importlib.import_module(module_path)
+    return getattr(module, function_name)

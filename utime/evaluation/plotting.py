@@ -44,7 +44,7 @@ def plot_and_save_hypnogram(out_path, y_pred, y_true=None, id_=None):
     plt.close(outs[0])
 
 
-def plot_confusion_matrix(y_true, y_pred, n_classes,
+def plot_confusion_matrix(cm, mapping,
                           normalize=False, id_=None,
                           cmap="Blues"):
     """
@@ -53,24 +53,12 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     This function prints and plots the confusion matrix.
     Normalization can be applied by setting `normalize=True`.
     """
-    from sklearn.metrics import confusion_matrix
-    from sklearn.utils.multiclass import unique_labels
-    if normalize:
-        title = 'Normalized confusion matrix for identifier {}'.format(id_ or "???")
-    else:
-        title = 'Confusion matrix, without normalization for identifier {}' \
-                ''.format(id_ or "???")
 
-    # Compute confusion matrix
-    classes = np.arange(n_classes)
-    cm = confusion_matrix(y_true, y_pred)
-    classes = classes[unique_labels(y_true, y_pred)]
-    if normalize:
-        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    title = "Normalized confusion matrix" if normalize else "Confusion matrix"
+    if id_ is not None:
+        title += " for identifier {}".format(id_)
 
-    # Get transformed labels
-    from utime import Defaults
-    labels = [Defaults.get_class_int_to_stage_string()[i] for i in classes]
+    labels = list(mapping.values())
 
     fig, ax = plt.subplots()
     im = ax.imshow(cm, interpolation='nearest', cmap=plt.get_cmap(cmap))
@@ -100,10 +88,10 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     return fig, ax
 
 
-def plot_and_save_cm(out_path, pred, true, n_classes, id_=None, normalized=True):
+def plot_and_save_cm(out_path, cm, mapping, normalize=False, id_=None):
     dir_ = os.path.split(out_path)[0]
     if not os.path.exists(dir_):
         os.makedirs(dir_)
-    fig, ax = plot_confusion_matrix(true, pred, n_classes, normalized, id_)
+    fig, ax = plot_confusion_matrix(cm, mapping, normalize, id_)
     fig.savefig(out_path, dpi=180)
     plt.close(fig)
