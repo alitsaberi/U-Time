@@ -14,7 +14,16 @@ from utime.utils.scriptutils.train import (get_last_epoch, get_lr_at_epoch,
 logger = logging.getLogger(__name__)
 
 
-def init_model(build_hparams, clear_previous=False):
+def apply_layer_freezing(model: tf.keras.Model, freeze_up_to_layer: str) -> None:
+    for layer in model.layers:
+        layer.trainable = False
+        if layer.name == freeze_up_to_layer:
+            return
+
+    raise ValueError(f"Layer {freeze_up_to_layer} not found in model")
+
+
+def init_model(build_hparams: dict, clear_previous: bool = False) -> tf.keras.Model:
     """
     From a set of hyperparameters 'build_hparams' (dict) initializes the
     model specified under build_hparams['model_class_name'].
@@ -34,7 +43,17 @@ def init_model(build_hparams, clear_previous=False):
     # Build new model of the specified type
     cls_name = build_hparams["model_class_name"]
     logger.info(f"Creating new model of type '{cls_name}'")
-    return models.__dict__[cls_name](**build_hparams)
+    model = models.__dict__[cls_name](**build_hparams)
+
+    if build_hparams.get("freeze_up_to_layer", None):
+        # Apply layer freezing
+        apply_layer_freezing(model, build_hparams["freeze_up_to_layer"])
+
+    # Log the model summary
+    model_summary = []
+    model.summary(print_fn=lambda x: model_summary.append(x), show_trainable=True)
+    logger.info("\n".join(model_summary))
+    return model
 
 
 def load_from_file(model, file_path, by_name=True):
