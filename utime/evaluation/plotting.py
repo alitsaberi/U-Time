@@ -54,7 +54,6 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     Normalization can be applied by setting `normalize=True`.
     """
     from sklearn.metrics import confusion_matrix
-    from sklearn.utils.multiclass import unique_labels
     if normalize:
         title = 'Normalized confusion matrix for identifier {}'.format(id_ or "???")
     else:
@@ -63,8 +62,7 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
 
     # Compute confusion matrix
     classes = np.arange(n_classes)
-    cm = confusion_matrix(y_true, y_pred)
-    classes = classes[unique_labels(y_true, y_pred)]
+    cm = confusion_matrix(y_true, y_pred, labels=classes)
     if normalize:
         cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
