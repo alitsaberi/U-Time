@@ -5,6 +5,7 @@ comparing to the ground truth labels.
 
 import logging
 import os
+from pathlib import Path
 import numpy as np
 from argparse import ArgumentParser
 from psg_utils.dataset.queue import LazyQueue
@@ -177,8 +178,7 @@ def plot_hypnogram(out_dir, pred, id_, true=None):
     Wrapper around hypnogram plotting function
     """
     from utime.evaluation.plotting import plot_and_save_hypnogram
-    hyp_plot_dir = os.path.join(out_dir, "plots", "hypnograms")
-    plot_and_save_hypnogram(out_path=os.path.join(hyp_plot_dir, id_ + ".png"),
+    plot_and_save_hypnogram(out_path=os.path.join(out_dir, "hypnogram.png"),
                             y_pred=pred,
                             y_true=true,
                             id_=id_)
@@ -189,10 +189,8 @@ def plot_cm(out_dir, pred, true, n_classes, id_):
     Wrapper around confusion matrix plotting function
     """
     from utime.evaluation.plotting import plot_and_save_cm
-    cm_plot_dir = os.path.join(out_dir, "plots", "CMs")
-
     # Compute and plot CM
-    plot_and_save_cm(out_path=os.path.join(cm_plot_dir, id_ + ".png"),
+    plot_and_save_cm(out_path=os.path.join(out_dir, "cm.png"),
                      pred=pred,
                      true=true,
                      n_classes=n_classes,
@@ -384,6 +382,8 @@ def run_pred_and_eval(dataset,
     logger.info(f"\nPREDICTING ON {len(dataset.pairs)} STUDIES")
     seq = get_sequencer(dataset, hparams)
 
+    out_dir = Path(out_dir)
+
     # Prepare evaluation data frames
     dice_eval_df = get_eval_df(seq)
     kappa_eval_df = get_eval_df(seq)
@@ -392,6 +392,9 @@ def run_pred_and_eval(dataset,
     for i, sleep_study_pair in enumerate(dataset):
         id_ = sleep_study_pair.identifier
         logger.info(f"[{i+1}/{len(dataset)}] Predicting on SleepStudy: {id_}")
+
+        pair_out_dir = out_dir / id_
+        pair_out_dir.mkdir(parents=True, exist_ok=True)
 
         # Predict
         with sleep_study_pair.loaded_in_context():
@@ -409,10 +412,9 @@ def run_pred_and_eval(dataset,
                                 period_length_sec=dataset.period_length_sec)[0]
         if not args.no_save:
             # Save the output
-            save_dir = os.path.join(out_dir, "files/{}".format(id_))
-            save(pred, fname=os.path.join(save_dir, "pred.npz"))
+            save(pred, fname=pair_out_dir / "pred.npz")
             if not args.no_save_true:
-                save(y, fname=os.path.join(save_dir, "true.npz"))
+                save(y, fname=pair_out_dir / "true.npz")
 
         # Evaluate: dice scores
         dice_pr_class = f1_score(y_true=y.ravel(),
@@ -430,9 +432,9 @@ def run_pred_and_eval(dataset,
 
         # Flag dependent evaluations:
         if args.plot_hypnograms:
-            plot_hypnogram(out_dir, pred, id_, true=y)
+            plot_hypnogram(pair_out_dir, pred, id_, true=y)
         if args.plot_CMs:
-            plot_cm(out_dir, pred, y, seq.n_classes, id_)
+            plot_cm(pair_out_dir, pred, y, seq.n_classes, id_)
 
     # Log eval to file and screen
     dice_eval_df = with_grand_mean_col(dice_eval_df)
