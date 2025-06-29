@@ -11,6 +11,7 @@ from psg_utils.dataset.queue import LazyQueue
 from sklearn.metrics import f1_score
 from utime import Defaults
 from utime.evaluation.metrics import class_wise_kappa
+from utime.utils.scriptutils.evaluate import get_splits_from_h5_dataset
 from utime.utils.system import find_and_set_gpus
 from utime.utils.scriptutils import (assert_project_folder,
                                      get_splits_from_all_datasets,
@@ -41,6 +42,8 @@ def get_argparser():
                         help="Segment each SleepStudy in one forward-pass "
                              "instead of using (GPU memory-efficient) sliding "
                              "window predictions.")
+    parser.add_argument("--preprocessed", action="store_true",
+                        help="Use preprocessed data instead of raw data.")
     parser.add_argument("--no_save", action="store_true",
                         help="Do not save prediction files")
     parser.add_argument("--no_save_true", action="store_true",
@@ -462,7 +465,15 @@ def run(args):
 
     # Get hyperparameters and init all described datasets
     from utime.hyperparameters import YAMLHParams
-    hparams = YAMLHParams(Defaults.get_hparams_path(project_dir))
+
+    if args.preprocessed:
+        yaml_path = Defaults.get_pre_processed_hparams_path(project_dir)
+        dataset_func = get_splits_from_h5_dataset
+    else:
+        yaml_path = Defaults.get_hparams_path(project_dir)
+        dataset_func = get_splits_from_all_datasets
+
+    hparams = YAMLHParams(yaml_path)
     if args.channels:
         hparams["select_channels"] = args.channels
         hparams["channel_sampling_groups"] = None
@@ -480,7 +491,7 @@ def run(args):
         model = get_and_load_model(project_dir, hparams, args.weights_file_name)
 
     # Run predictions on all datasets
-    datasets = get_splits_from_all_datasets(hparams=hparams, splits_to_load=(args.data_split,))
+    datasets = dataset_func(hparams=hparams, splits_to_load=(args.data_split,))
     eval_dirs = []
     for dataset in datasets:
         dataset = dataset[0]
