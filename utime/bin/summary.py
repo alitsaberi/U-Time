@@ -113,13 +113,15 @@ def parse_and_add(file_, results, drop_rows, drop_cols):
     try:
         df = df.drop(index=drop_rows, columns=drop_cols)
     except KeyError:
-        from sys import exit
-        logger.error("[PARSE ERROR] Invalid row or column in {drop_rows} or {drop_cols} respectively.\n"
-                     "One or more of these were not found in file:\n{file_}\n\n"
+        logger.warning(f"[PARSE ERROR] Invalid row or column in {drop_rows} or {drop_cols} respectively.\n"
+                     f"One or more of these were not found in file:\n{file_}\n\n"
                      "This file has the following:\n"
-                     "Rows:    {list(df.index)}\n"
-                     "Columns: {list(df.columns)}")
-        exit(1)
+                     f"Rows:    {list(df.index)}\n"
+                     f"Columns: {list(df.columns)}")
+
+    logger.info(f"Parsed file: {file_}")
+    print_reduced_mean(df)
+
     if len(results) == 0:
         return df
     o = pd.concat((df, results), axis=0, sort=True)

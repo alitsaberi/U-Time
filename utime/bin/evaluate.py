@@ -416,17 +416,24 @@ def run_pred_and_eval(dataset,
             if not args.no_save_true:
                 save(y, fname=pair_out_dir / "true.npz")
 
-        # Evaluate: dice scores
-        dice_pr_class = f1_score(y_true=y.ravel(),
-                                 y_pred=pred.ravel(),
+        # Create a mask for usable data (labels within the valid class range)
+        in_bounds_mask = (y >= 0) & (y < seq.n_classes)
+        
+        # Mask the true and predicted labels
+        y_usable = y[in_bounds_mask]
+        pred_usable = pred[in_bounds_mask]
+
+        # Evaluate: dice scores with masked data
+        dice_pr_class = f1_score(y_true=y_usable.ravel(),
+                                 y_pred=pred_usable.ravel(),
                                  labels=list(range(seq.n_classes)),
                                  average=None,
                                  zero_division=1)
         logger.info(f"-- Dice scores:  {np.round(dice_pr_class, 4)}")
         add_to_eval_df(dice_eval_df, id_, values=dice_pr_class)
 
-        # Evaluate: kappa
-        kappa_pr_class = class_wise_kappa(y, pred, n_classes=seq.n_classes)
+        # Evaluate: kappa with masked data
+        kappa_pr_class = class_wise_kappa(y_usable, pred_usable, n_classes=seq.n_classes)
         logger.info(f"-- Kappa scores: {np.round(kappa_pr_class, 4)}")
         add_to_eval_df(kappa_eval_df, id_, values=kappa_pr_class)
 

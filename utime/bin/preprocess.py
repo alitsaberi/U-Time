@@ -58,7 +58,7 @@ def get_argparser():
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is 'preprocessing'")
     parser.add_argument("--apply-usability-labels", action="store_true", help="Apply usability labels to the hypnogram.")
-    parser.add_argument("--unusable-class", type=int, default=6, help="Class to use for unusable data.")
+    parser.add_argument("--unusable-class", type=int, default=5, help="Class to use for unusable data.")
     return parser
 
 
@@ -185,6 +185,7 @@ def preprocess_study_with_usability_scores(h5_file_group, unusable_class: int, s
             cls_to_indx_group = study_group.create_group('class_to_index')
             dtype = np.dtype('uint16') if len(y) <= 65535 else np.dtype('uint32')
             classes = list(study.hypnogram.classes) + [unusable_class]
+            logger.info(f"Classes: {classes}")
             for class_ in classes:
                 inds = np.where(y == class_)[0].astype(dtype)
                 cls_to_indx_group.create_dataset(
