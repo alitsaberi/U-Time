@@ -14,7 +14,7 @@ def get_splits_from_h5_dataset(hparams: YAMLHParams, splits_to_load: Tuple[str, 
 
     Args:
         hparams: A YAMLHParams object storing references to one or more datasets.
-        split_to_load: A string specifying the name of the sub-dataset to load according to its hparams description.
+        splits_to_load: A tuple of strings specifying the names of the sub-datasets to load according to their hparams descriptions.
 
     Returns:
         Yields one or more splits of data from the dataset as described by 'hparams'.
@@ -51,45 +51,4 @@ def get_splits_from_h5_dataset(hparams: YAMLHParams, splits_to_load: Tuple[str, 
 
         set_preprocessing_pipeline(*splits, hparams=hparams)
         
-        yield splits
-
-
-def get_splits_from_numpy_dataset(hparams: YAMLHParams, splits_to_load: Tuple[str, ...]) -> Generator[List[np.ndarray], None, None]:
-    """
-    Loads dataset splits from a numpy dataset according to the specified splits.
-
-    Args:
-        hparams: A YAMLHParams object storing references to one or more datasets.
-        splits_to_load: A tuple of strings specifying the names of the sub-datasets to load according to their hparams descriptions.
-
-    Returns:
-        Yields one or more splits of data from the dataset as described by 'hparams'.
-    """
-
-    def _get_split(data_dir: str, regex: str, hparams: dict) -> np.ndarray:
-        """
-        Helper for returning a dataset from a numpy array according to
-        regex and a hyperparameter set for a single dataset.
-        """
-        # Assuming data_dir contains numpy files matching the regex
-        # This is a placeholder for actual loading logic
-        data_path = os.path.join(data_dir, regex)
-        dataset = np.load(data_path)
-        return dataset
-
-    data_hparams = get_all_dataset_hparams(hparams, dataset_ids=None)
-    for dataset_id, hparams in data_hparams.items():
-
-        splits = []
-
-        for split_to_load in splits_to_load:
-            data_dir = hparams[split_to_load]['data_dir']
-            splits.append(_get_split(
-                data_dir=data_dir,
-                regex=f'{hparams[split_to_load]["identifier"]}.npy',
-                hparams=hparams[split_to_load]
-            ))
-
-        set_preprocessing_pipeline(*splits, hparams=hparams)
-
         yield splits

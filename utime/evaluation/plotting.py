@@ -7,21 +7,25 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+N_EPOCHS_PER_HOUR = 3600 / 30  # 30 seconds per epoch
+
 def get_hypnogram(y_pred, y_true=None, id_=None):
     def format_ax(ax, include_out_of_bounds=True):
         ax.set_xlabel("Time (hours)")
         ax.set_ylabel("Sleep Stage")
         if include_out_of_bounds:
-            ax.set_yticks(range(5))
-            ax.set_yticklabels(["Wake", "REM", "N1", "N2", "N3"])
+            labels = ["Wake", "REM", "N1", "N2", "N3"]
+            ax.set_yticks(range(len(labels)))
+            ax.set_yticklabels(labels)
         else:
-            ax.set_yticks(range(7))
-            ax.set_yticklabels(["Wake", "REM", "N1", "N2", "N3", "Unknown", "Unusable", ])
+            labels = ["Wake", "REM", "N1", "N2", "N3", "Unknown", "Unusable"]
+            ax.set_yticks(range(len(labels)))
+            ax.set_yticklabels(labels)
         ax.invert_yaxis()
-        ax.set_xlim(0, len(y_pred) / 120)
+        ax.set_xlim(0, len(y_pred) / N_EPOCHS_PER_HOUR)
         l = ax.legend(loc=3)
         l.get_frame().set_linewidth(0)
-    ids = np.arange(len(y_pred)) / 120  # Each period is 30 seconds, so divide by 120 to convert to hours
+    ids = np.arange(len(y_pred)) / N_EPOCHS_PER_HOUR
     fig = plt.figure(figsize=(15, 3))  # Decreased height to make y-labels closer
     ax1 = fig.add_subplot(111)
     fig.subplots_adjust(left=0.1, top=0.85, bottom=0.15, right=0.85)  # Adjust layout to decrease left margin
