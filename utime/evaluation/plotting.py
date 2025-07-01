@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -45,7 +46,7 @@ def plot_and_save_hypnogram(out_path, y_pred, y_true=None, id_=None):
 
 def plot_confusion_matrix(y_true, y_pred, n_classes,
                           normalize=False, id_=None,
-                          cmap="Blues"):
+                          cmap: str = "Blues", title: Optional[str] = None):
     """
     Adapted from sklearn 'plot_confusion_matrix.py'.
 
@@ -54,9 +55,9 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     """
     from sklearn.metrics import confusion_matrix
     if normalize:
-        title = 'Normalized Confusion Matrix for Identifier: {}'.format(id_ or "???")
+        title = title or 'Normalized Confusion Matrix for Identifier: {}'.format(id_ or "???")
     else:
-        title = 'Confusion Matrix, Without Normalization for Identifier: {}'.format(id_ or "???")
+        title = title or 'Confusion Matrix, Without Normalization for Identifier: {}'.format(id_ or "???")
 
     # Compute confusion matrix
     classes = np.arange(n_classes)
@@ -98,10 +99,10 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     return fig, ax
 
 
-def plot_and_save_cm(out_path, pred, true, n_classes, id_=None, normalized=True):
+def plot_and_save_cm(out_path, pred, true, n_classes, id_=None, normalized=True, title: Optional[str] = None, cmap: str = "Blues"):
     dir_ = os.path.split(out_path)[0]
     if not os.path.exists(dir_):
         os.makedirs(dir_)
-    fig, ax = plot_confusion_matrix(true, pred, n_classes, normalized, id_)
+    fig, ax = plot_confusion_matrix(true, pred, n_classes, normalized, id_, cmap=cmap, title=title)
     fig.savefig(out_path, dpi=180)
     plt.close(fig)
