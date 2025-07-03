@@ -5,6 +5,7 @@ files of labels
 
 import logging
 import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from argparse import ArgumentParser
@@ -14,9 +15,12 @@ from utime import Defaults
 from utime.evaluation import concatenate_true_pred_pairs
 from utime.evaluation import (f1_scores_from_cm, precision_scores_from_cm,
                               recall_scores_from_cm)
+from utime.evaluation.plotting import plot_and_save_cm
 from utime.utils.scriptutils import add_logging_file_handler
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CMAP = "Blues"
 
 
 def get_argparser():
@@ -26,6 +30,7 @@ def get_argparser():
     parser = ArgumentParser(description='Output a confusion matrix computed '
                                         'over one or more true/pred .npz '
                                         'files.')
+    parser.add_argument("--out-dir", type=Path, default=Path("."))
     parser.add_argument("--true_pattern", type=str,
                         default="split*/predictions/test_data/dataset_1/files/*/true.npz",
                         help='Glob-like pattern to one or more .npz files '
@@ -59,6 +64,10 @@ def get_argparser():
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is None (no log file)")
+    parser.add_argument("--plot-cm", action="store_true",
+                        help="Save the confusion matrix to a file.")
+    parser.add_argument("--cmap", type=str, default=DEFAULT_CMAP,
+                        help="Matplotlib colormap to use for the confusion matrix.")
     return parser
 
 
@@ -106,13 +115,16 @@ def trim(p1, p2):
 
 def glob_to_metrics_df(true_pattern: str,
                        pred_pattern: str,
+                       out_dir: Path,
                        wake_trim_min: int = None,
                        ignore_classes: list = None,
                        group_non_rem: bool = False,
                        normalized: bool = False,
                        round: int = 3,
                        period_length_sec: int = 30,
-                       show_pairs: bool = False):
+                       show_pairs: bool = False,
+                       plot_cm: bool = False,
+                       cmap: str = DEFAULT_CMAP):
     """
     Run the script according to 'args' - Please refer to the argparser.
     """
@@ -137,7 +149,7 @@ def glob_to_metrics_df(true_pattern: str,
         raise ValueError("Two or more identical file names in the set "
                          "of 'pred' files. Cannot uniquely match true/pred "
                          "files")
-
+    
     pairs = list(zip(true, pred))
     if show_pairs:
         logger.info("PAIRS:\n{}".format(pairs))
@@ -156,9 +168,9 @@ def glob_to_metrics_df(true_pattern: str,
     mapping = Defaults.get_class_int_to_stage_string()
     true, pred = map(lambda x: x.astype(np.uint8).reshape(-1, 1), concatenate_true_pred_pairs(pairs=np_pairs))
 
-    labels = None
+    labels = list(set(np.unique(true)) | set(np.unique(pred)))
     if ignore_classes:
-        labels = list((set(np.unique(true)) | set(np.unique(pred))) - set(ignore_classes))
+        labels = list(set(labels) - set(ignore_classes))
         logger.info(f"OBS: Ignoring class(es): {ignore_classes} / {[mapping[i] for i in ignore_classes]}. "
                     f"I.e., only epochs with true labels in {labels} / {[mapping[i] for i in labels]} will be considered.")
 
@@ -175,11 +187,13 @@ def glob_to_metrics_df(true_pattern: str,
 
     # Print macro metrics
     keep_mask = np.where(np.isin(true, labels))
-    logger.info(f"Unweighted global scores:\n"
+    global_scores_str = (
         f"Accuracy: {np.round((true[keep_mask] == pred[keep_mask]).mean(), round)}\n"
         f"Macro F1: {np.round(f1_score(true[keep_mask], pred[keep_mask], average='macro'), round)}\n"
         f"Micro F1: {np.round(f1_score(true[keep_mask], pred[keep_mask], average='micro'), round)}\n"
-        f"Kappa:    {np.round(cohen_kappa_score(true[keep_mask], pred[keep_mask]), round)}")
+        f"Kappa:    {np.round(cohen_kappa_score(true[keep_mask], pred[keep_mask]), round)}"
+    )
+    logger.info(f"Unweighted global scores:\n{global_scores_str}")
 
     cm = confusion_matrix(true, pred, labels=labels)
     if normalized:
@@ -204,7 +218,12 @@ def glob_to_metrics_df(true_pattern: str,
     }, index=[mapping[i] for i in labels])
     metrics = metrics.T
     metrics["mean"] = metrics.mean(axis=1)
-    logger.info(f"\n\n{p} Metrics:\n" + str(np.round(metrics.T, round)) + "\n")
+    metrics_str = str(np.round(metrics.T, round))
+    logger.info(f"\n\n{p} Metrics:\n" + metrics_str + "\n")
+
+    if plot_cm:
+        plot_and_save_cm(out_dir / f"cm_{p}.png", pred, true, len(labels), title=global_scores_str, cmap=cmap)
+
     return metrics
 
 
@@ -216,13 +235,16 @@ def entry_func(args=None):
     glob_to_metrics_df(
         true_pattern=args.true_pattern,
         pred_pattern=args.pred_pattern,
+        out_dir=args.out_dir,
         wake_trim_min=args.wake_trim_min,
         ignore_classes=args.ignore_classes,
         group_non_rem=args.group_non_rem,
         normalized=args.normalized,
         round=args.round,
         period_length_sec=args.period_length_sec,
-        show_pairs=args.show_pairs
+        show_pairs=args.show_pairs,
+        plot_cm=args.plot_cm,
+        cmap=args.cmap,
     )
 
 

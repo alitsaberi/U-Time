@@ -5,12 +5,14 @@ comparing to the ground truth labels.
 
 import logging
 import os
+from pathlib import Path
 import numpy as np
 from argparse import ArgumentParser
 from psg_utils.dataset.queue import LazyQueue
 from sklearn.metrics import f1_score
 from utime import Defaults
 from utime.evaluation.metrics import class_wise_kappa
+from utime.utils.scriptutils.evaluate import get_splits_from_h5_dataset
 from utime.utils.system import find_and_set_gpus
 from utime.utils.scriptutils import (assert_project_folder,
                                      get_splits_from_all_datasets,
@@ -41,6 +43,8 @@ def get_argparser():
                         help="Segment each SleepStudy in one forward-pass "
                              "instead of using (GPU memory-efficient) sliding "
                              "window predictions.")
+    parser.add_argument("--preprocessed", action="store_true",
+                        help="Use preprocessed data instead of raw data.")
     parser.add_argument("--no_save", action="store_true",
                         help="Do not save prediction files")
     parser.add_argument("--no_save_true", action="store_true",
@@ -174,8 +178,7 @@ def plot_hypnogram(out_dir, pred, id_, true=None):
     Wrapper around hypnogram plotting function
     """
     from utime.evaluation.plotting import plot_and_save_hypnogram
-    hyp_plot_dir = os.path.join(out_dir, "plots", "hypnograms")
-    plot_and_save_hypnogram(out_path=os.path.join(hyp_plot_dir, id_ + ".png"),
+    plot_and_save_hypnogram(out_path=os.path.join(out_dir, "hypnogram.png"),
                             y_pred=pred,
                             y_true=true,
                             id_=id_)
@@ -186,10 +189,8 @@ def plot_cm(out_dir, pred, true, n_classes, id_):
     Wrapper around confusion matrix plotting function
     """
     from utime.evaluation.plotting import plot_and_save_cm
-    cm_plot_dir = os.path.join(out_dir, "plots", "CMs")
-
     # Compute and plot CM
-    plot_and_save_cm(out_path=os.path.join(cm_plot_dir, id_ + ".png"),
+    plot_and_save_cm(out_path=os.path.join(out_dir, "cm.png"),
                      pred=pred,
                      true=true,
                      n_classes=n_classes,
@@ -381,6 +382,8 @@ def run_pred_and_eval(dataset,
     logger.info(f"\nPREDICTING ON {len(dataset.pairs)} STUDIES")
     seq = get_sequencer(dataset, hparams)
 
+    out_dir = Path(out_dir)
+
     # Prepare evaluation data frames
     dice_eval_df = get_eval_df(seq)
     kappa_eval_df = get_eval_df(seq)
@@ -389,6 +392,9 @@ def run_pred_and_eval(dataset,
     for i, sleep_study_pair in enumerate(dataset):
         id_ = sleep_study_pair.identifier
         logger.info(f"[{i+1}/{len(dataset)}] Predicting on SleepStudy: {id_}")
+
+        pair_out_dir = out_dir / id_
+        pair_out_dir.mkdir(parents=True, exist_ok=True)
 
         # Predict
         with sleep_study_pair.loaded_in_context():
@@ -406,30 +412,36 @@ def run_pred_and_eval(dataset,
                                 period_length_sec=dataset.period_length_sec)[0]
         if not args.no_save:
             # Save the output
-            save_dir = os.path.join(out_dir, "files/{}".format(id_))
-            save(pred, fname=os.path.join(save_dir, "pred.npz"))
+            save(pred, fname=pair_out_dir / "pred.npz")
             if not args.no_save_true:
-                save(y, fname=os.path.join(save_dir, "true.npz"))
+                save(y, fname=pair_out_dir / "true.npz")
 
-        # Evaluate: dice scores
-        dice_pr_class = f1_score(y_true=y.ravel(),
-                                 y_pred=pred.ravel(),
+        # Create a mask for usable data (labels within the valid class range)
+        in_bounds_mask = (y >= 0) & (y < seq.n_classes)
+        
+        # Mask the true and predicted labels
+        y_usable = y[in_bounds_mask]
+        pred_usable = pred[in_bounds_mask]
+
+        # Evaluate: dice scores with masked data
+        dice_pr_class = f1_score(y_true=y_usable.ravel(),
+                                 y_pred=pred_usable.ravel(),
                                  labels=list(range(seq.n_classes)),
                                  average=None,
                                  zero_division=1)
         logger.info(f"-- Dice scores:  {np.round(dice_pr_class, 4)}")
         add_to_eval_df(dice_eval_df, id_, values=dice_pr_class)
 
-        # Evaluate: kappa
-        kappa_pr_class = class_wise_kappa(y, pred, n_classes=seq.n_classes)
+        # Evaluate: kappa with masked data
+        kappa_pr_class = class_wise_kappa(y_usable, pred_usable, n_classes=seq.n_classes)
         logger.info(f"-- Kappa scores: {np.round(kappa_pr_class, 4)}")
         add_to_eval_df(kappa_eval_df, id_, values=kappa_pr_class)
 
         # Flag dependent evaluations:
         if args.plot_hypnograms:
-            plot_hypnogram(out_dir, pred, id_, true=y)
+            plot_hypnogram(pair_out_dir, pred, id_, true=y)
         if args.plot_CMs:
-            plot_cm(out_dir, pred, y, seq.n_classes, id_)
+            plot_cm(pair_out_dir, pred, y, seq.n_classes, id_)
 
     # Log eval to file and screen
     dice_eval_df = with_grand_mean_col(dice_eval_df)
@@ -462,7 +474,15 @@ def run(args):
 
     # Get hyperparameters and init all described datasets
     from utime.hyperparameters import YAMLHParams
-    hparams = YAMLHParams(Defaults.get_hparams_path(project_dir))
+
+    if args.preprocessed:
+        yaml_path = Defaults.get_pre_processed_hparams_path(project_dir)
+        dataset_func = get_splits_from_h5_dataset
+    else:
+        yaml_path = Defaults.get_hparams_path(project_dir)
+        dataset_func = get_splits_from_all_datasets
+
+    hparams = YAMLHParams(yaml_path)
     if args.channels:
         hparams["select_channels"] = args.channels
         hparams["channel_sampling_groups"] = None
@@ -480,7 +500,7 @@ def run(args):
         model = get_and_load_model(project_dir, hparams, args.weights_file_name)
 
     # Run predictions on all datasets
-    datasets = get_splits_from_all_datasets(hparams=hparams, splits_to_load=(args.data_split,))
+    datasets = dataset_func(hparams=hparams, splits_to_load=(args.data_split,))
     eval_dirs = []
     for dataset in datasets:
         dataset = dataset[0]

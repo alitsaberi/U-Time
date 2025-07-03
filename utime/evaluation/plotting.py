@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -7,31 +8,30 @@ logger = logging.getLogger(__name__)
 
 
 def get_hypnogram(y_pred, y_true=None, id_=None):
-    def format_ax(ax):
-        ax.set_xlabel("Period number")
-        ax.set_ylabel("Sleep stage")
-        ax.set_yticks(range(6))
-        ax.set_yticklabels(["Wake", "N1", "N2", "N3", "REM", "Unknown"])
+    def format_ax(ax, include_out_of_bounds=True):
+        ax.set_xlabel("Time (hours)")
+        ax.set_ylabel("Sleep Stage")
+        if include_out_of_bounds:
+            ax.set_yticks(range(5))
+            ax.set_yticklabels(["Wake", "REM", "N1", "N2", "N3"])
+        else:
+            ax.set_yticks(range(7))
+            ax.set_yticklabels(["Wake", "REM", "N1", "N2", "N3", "Unknown", "Unusable", ])
         ax.invert_yaxis()
-        ax.set_xlim(1, ids[-1]+1)
+        ax.set_xlim(0, len(y_pred) / 120)
         l = ax.legend(loc=3)
         l.get_frame().set_linewidth(0)
-    ids = np.arange(len(y_pred))
+    ids = np.arange(len(y_pred)) / 120  # Each period is 30 seconds, so divide by 120 to convert to hours
+    fig = plt.figure(figsize=(15, 3))  # Decreased height to make y-labels closer
+    ax1 = fig.add_subplot(111)
+    fig.subplots_adjust(left=0.1, top=0.85, bottom=0.15, right=0.85)  # Adjust layout to decrease left margin
+    fig.suptitle("Hypnogram for Identifier: {}".format(id_ or "???"), fontsize=14, fontweight='bold')
+    ax1.step(ids, y_pred, color="teal", label="Predicted", linewidth=3, alpha=0.9)
     if y_true is not None:
-        fig, (ax1, ax2) = plt.subplots(nrows=2, sharex=True)
-    else:
-        fig = plt.figure()
-        ax1 = fig.add_subplot(111)
-    fig.suptitle("Hypnogram for identifier: {}".format(id_ or "???"))
-
-    # Plot predicted hypnogram
-    ax1.step(ids+1, y_pred, color="darkcyan", label="Predicted")
-    format_ax(ax1)
-    if y_true is not None:
-        ax2.step(ids+1, y_true, color="darkred", label="True")
-        format_ax(ax2)
-        # fig.subplots_adjust(hspace=0.4)
-        return fig, ax1, ax2
+        ax1.step(ids, y_true, color="salmon", label="True", linewidth=2, alpha=0.7)
+    format_ax(ax1, include_out_of_bounds=False)
+    ax1.grid(True, which='both', linestyle='--', linewidth=0.5, alpha=0.7)
+    ax1.legend(fontsize=10, frameon=True, shadow=True, bbox_to_anchor=(1.05, 1), loc='upper left')
     return fig, ax1
 
 
@@ -46,7 +46,7 @@ def plot_and_save_hypnogram(out_path, y_pred, y_true=None, id_=None):
 
 def plot_confusion_matrix(y_true, y_pred, n_classes,
                           normalize=False, id_=None,
-                          cmap="Blues"):
+                          cmap: str = "Blues", title: Optional[str] = None):
     """
     Adapted from sklearn 'plot_confusion_matrix.py'.
 
@@ -54,17 +54,14 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     Normalization can be applied by setting `normalize=True`.
     """
     from sklearn.metrics import confusion_matrix
-    from sklearn.utils.multiclass import unique_labels
     if normalize:
-        title = 'Normalized confusion matrix for identifier {}'.format(id_ or "???")
+        title = title or 'Normalized Confusion Matrix for Identifier: {}'.format(id_ or "???")
     else:
-        title = 'Confusion matrix, without normalization for identifier {}' \
-                ''.format(id_ or "???")
+        title = title or 'Confusion Matrix, Without Normalization for Identifier: {}'.format(id_ or "???")
 
     # Compute confusion matrix
     classes = np.arange(n_classes)
-    cm = confusion_matrix(y_true, y_pred)
-    classes = classes[unique_labels(y_true, y_pred)]
+    cm = confusion_matrix(y_true, y_pred, labels=classes)
     if normalize:
         cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
@@ -72,7 +69,7 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     from utime import Defaults
     labels = [Defaults.get_class_int_to_stage_string()[i] for i in classes]
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(8, 6))
     im = ax.imshow(cm, interpolation='nearest', cmap=plt.get_cmap(cmap))
     ax.figure.colorbar(im, ax=ax)
     # We want to show all ticks...
@@ -97,13 +94,15 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
                     ha="center", va="center",
                     color="white" if cm[i, j] > thresh else "black")
     fig.tight_layout()
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.grid(False)
     return fig, ax
 
 
-def plot_and_save_cm(out_path, pred, true, n_classes, id_=None, normalized=True):
+def plot_and_save_cm(out_path, pred, true, n_classes, id_=None, normalized=True, title: Optional[str] = None, cmap: str = "Blues"):
     dir_ = os.path.split(out_path)[0]
     if not os.path.exists(dir_):
         os.makedirs(dir_)
-    fig, ax = plot_confusion_matrix(true, pred, n_classes, normalized, id_)
+    fig, ax = plot_confusion_matrix(true, pred, n_classes, normalized, id_, cmap=cmap, title=title)
     fig.savefig(out_path, dpi=180)
     plt.close(fig)

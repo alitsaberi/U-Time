@@ -133,7 +133,7 @@ class BalancedRandomBatchSequence(BatchSequence):
                 try:
                     class_inds = sleep_study.get_class_indices(cls)
                     if len(class_inds) == 0:
-                        logger.warning(f"Found empty class inds array for study {sleep_study} and class {cls}")
+                        logger.debug(f"Found empty class inds array for study {sleep_study} and class {cls}")
                         raise KeyError
                 except KeyError:
                     # This SS does not have the given class
