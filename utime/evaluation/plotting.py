@@ -13,12 +13,25 @@ def get_hypnogram(y_pred, y_true=None, id_=None):
     def format_ax(ax, include_out_of_bounds=True):
         ax.set_xlabel("Time (hours)")
         ax.set_ylabel("Sleep Stage")
+        
+        # Determine number of classes from the max value in predictions
+        n_classes = max(np.max(y_pred), np.max(y_true) if y_true is not None else 0) + 1
+        
+        # Set labels based on number of classes
+        if n_classes == 3:
+            labels = ["Wake", "NREM", "REM"]
+        elif n_classes == 4:
+            labels = ["Wake", "Light", "Deep", "REM"]
+        elif n_classes == 5:
+            labels = ["Wake", "N1", "N2", "N3", "REM"]
+        else:
+            # Default case
+            labels = [f"Class {i}" for i in range(n_classes)]
+            
         if include_out_of_bounds:
-            labels = ["Wake", "REM", "N1", "N2", "N3"]
             ax.set_yticks(range(len(labels)))
             ax.set_yticklabels(labels)
         else:
-            labels = ["Wake", "REM", "N1", "N2", "N3", "Unknown", "Unusable"]
             ax.set_yticks(range(len(labels)))
             ax.set_yticklabels(labels)
         ax.invert_yaxis()
@@ -69,9 +82,16 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     if normalize:
         cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
-    # Get transformed labels
-    from utime import Defaults
-    labels = [Defaults.get_class_int_to_stage_string()[i] for i in classes]
+    # Set labels based on number of classes
+    if n_classes == 3:
+        labels = ["Wake", "NREM", "REM"]
+    elif n_classes == 4:
+        labels = ["Wake", "Light", "Deep", "REM"]
+    elif n_classes == 5:
+        labels = ["Wake", "N1", "N2", "N3", "REM"]
+    else:
+        # Default case
+        labels = [f"Class {i}" for i in range(n_classes)]
 
     fig, ax = plt.subplots(figsize=(8, 6))
     im = ax.imshow(cm, interpolation='nearest', cmap=plt.get_cmap(cmap))
