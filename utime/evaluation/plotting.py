@@ -36,8 +36,8 @@ def get_hypnogram(y_pred, y_true=None, id_=None):
             ax.set_yticklabels(labels)
         ax.invert_yaxis()
         ax.set_xlim(0, len(y_pred) / N_EPOCHS_PER_HOUR)
-        l = ax.legend(loc=3)
-        l.get_frame().set_linewidth(0)
+        legend = ax.legend(loc=3)
+        legend.get_frame().set_linewidth(0)
     ids = np.arange(len(y_pred)) / N_EPOCHS_PER_HOUR
     fig = plt.figure(figsize=(15, 3))  # Decreased height to make y-labels closer
     ax1 = fig.add_subplot(111)
@@ -63,7 +63,8 @@ def plot_and_save_hypnogram(out_path, y_pred, y_true=None, id_=None):
 
 def plot_confusion_matrix(y_true, y_pred, n_classes,
                           normalize=False, id_=None,
-                          cmap: str = "Blues", title: Optional[str] = None):
+                          cmap: str = "Blues", title: Optional[str] = None,
+                          class_labels: Optional[list] = None):
     """
     Adapted from sklearn 'plot_confusion_matrix.py'.
 
@@ -82,16 +83,20 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     if normalize:
         cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
-    # Set labels based on number of classes
-    if n_classes == 3:
-        labels = ["Wake", "NREM", "REM"]
-    elif n_classes == 4:
-        labels = ["Wake", "Light", "Deep", "REM"]
-    elif n_classes == 5:
-        labels = ["Wake", "N1", "N2", "N3", "REM"]
+    # Use provided labels or generate default ones
+    if class_labels:
+        labels = class_labels
     else:
-        # Default case
-        labels = [f"Class {i}" for i in range(n_classes)]
+        # Set labels based on number of classes
+        if n_classes == 3:
+            labels = ["Wake", "NREM", "REM"]
+        elif n_classes == 4:
+            labels = ["Wake", "Light", "Deep", "REM"]
+        elif n_classes == 5:
+            labels = ["Wake", "N1", "N2", "N3", "REM"]
+        else:
+            # Default case
+            labels = [f"Class {i}" for i in range(n_classes)]
 
     fig, ax = plt.subplots(figsize=(8, 6))
     im = ax.imshow(cm, interpolation='nearest', cmap=plt.get_cmap(cmap))
@@ -123,10 +128,10 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     return fig, ax
 
 
-def plot_and_save_cm(out_path, pred, true, n_classes, id_=None, normalized=True, title: Optional[str] = None, cmap: str = "Blues"):
+def plot_and_save_cm(out_path, pred, true, n_classes, id_=None, normalized=True, title: Optional[str] = None, cmap: str = "Blues", class_labels: Optional[list] = None):
     dir_ = os.path.split(out_path)[0]
     if not os.path.exists(dir_):
         os.makedirs(dir_)
-    fig, ax = plot_confusion_matrix(true, pred, n_classes, normalized, id_, cmap=cmap, title=title)
+    fig, ax = plot_confusion_matrix(true, pred, n_classes, normalized, id_, cmap=cmap, title=title, class_labels=class_labels)
     fig.savefig(out_path, dpi=180)
     plt.close(fig)
