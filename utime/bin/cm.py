@@ -11,7 +11,6 @@ import pandas as pd
 from argparse import ArgumentParser
 from glob import glob
 from sklearn.metrics import confusion_matrix, f1_score, cohen_kappa_score
-from utime import Defaults
 from utime.evaluation import concatenate_true_pred_pairs
 from utime.evaluation import (f1_scores_from_cm, precision_scores_from_cm,
                               recall_scores_from_cm)
@@ -32,7 +31,7 @@ def get_argparser():
                                         'files.')
     parser.add_argument("--out-dir", type=Path, default=Path("."))
     parser.add_argument("--true_pattern", type=str,
-                        default="split*/predictions/test_data/dataset_1/files/*/true.npz",
+                        default="--norm",
                         help='Glob-like pattern to one or more .npz files '
                              'storing the true labels')
     parser.add_argument("--pred_pattern", type=str,
@@ -43,8 +42,10 @@ def get_argparser():
                         help="Normalize the CM to show fraction of total trues")
     parser.add_argument("--show_pairs", action="store_true",
                         help="Show the paired files (for debugging)")
-    parser.add_argument("--group_non_rem", action="store_true",
-                        help="Group all non-rem stages (N1, N2, N3) into one.")
+    parser.add_argument("--group_classes", type=str, default=None,
+                        help="Specify how to group classes. Options: 'wake_sleep' (groups all sleep stages), "
+                             "'non_rem' (groups N1, N2, N3), or a comma-separated list of class mappings "
+                             "in format 'source1:target1,source2:target2'")
     parser.add_argument("--round", type=int, default=3,
                         help="Round float numbers, only applicable "
                              "with --normalized.")
@@ -118,7 +119,7 @@ def glob_to_metrics_df(true_pattern: str,
                        out_dir: Path,
                        wake_trim_min: int = None,
                        ignore_classes: list = None,
-                       group_non_rem: bool = False,
+                       group_classes: str = None,
                        normalized: bool = False,
                        round: int = 3,
                        period_length_sec: int = 30,
@@ -126,7 +127,24 @@ def glob_to_metrics_df(true_pattern: str,
                        plot_cm: bool = False,
                        cmap: str = DEFAULT_CMAP):
     """
-    Run the script according to 'args' - Please refer to the argparser.
+    Run the script according to the provided arguments.
+
+    Args:
+        true_pattern: Glob pattern for true label files
+        pred_pattern: Glob pattern for prediction files
+        out_dir: Output directory for results
+        wake_trim_min: Minutes of wake to trim from start/end
+        ignore_classes: List of class indices to ignore
+        group_classes: How to group classes. Options:
+            - 'wake_sleep': Groups all sleep stages into one
+            - 'non_rem': Groups N1, N2, N3 into one
+            - 'source:target,...': Custom grouping (e.g. '2:1,3:1')
+        normalized: Whether to normalize confusion matrix
+        round: Number of decimals to round to
+        period_length_sec: Length of each period in seconds
+        show_pairs: Whether to show file pairs
+        plot_cm: Whether to plot confusion matrix
+        cmap: Matplotlib colormap for confusion matrix
     """
     logger.info("Looking for files...")
     true = sorted(glob(true_pattern))
@@ -155,8 +173,9 @@ def glob_to_metrics_df(true_pattern: str,
         logger.info("PAIRS:\n{}".format(pairs))
     # Load the pairs
     logger.info("Loading {} pairs...".format(len(pairs)))
-    l = lambda x: [np.load(f)["arr_0"] if os.path.splitext(f)[-1] == ".npz" else np.load(f) for f in x]
-    np_pairs = list(map(l, pairs))
+    def load_array(files):
+        return [np.load(f)["arr_0"] if os.path.splitext(f)[-1] == ".npz" else np.load(f) for f in files]
+    np_pairs = list(map(load_array, pairs))
     for i, (p1, p2) in enumerate(np_pairs):
         if len(p1) != len(p2):
             logger.warning(f"Not equal lengths: {pairs[i]} {f'{len(p1)}/{len(p2)}'}. Trimming...")
@@ -165,25 +184,112 @@ def glob_to_metrics_df(true_pattern: str,
         logger.info("OBS: Wake trimming of {} minutes (period length {} sec)"
                     "".format(wake_trim_min, period_length_sec))
         np_pairs = wake_trim(np_pairs, wake_trim_min, period_length_sec)
-    mapping = Defaults.get_class_int_to_stage_string()
+    # Load and concatenate data first
     true, pred = map(lambda x: x.astype(np.uint8).reshape(-1, 1), concatenate_true_pred_pairs(pairs=np_pairs))
-
-    labels = list(set(np.unique(true)) | set(np.unique(pred)))
+    
+    # Detect unique classes in the data
+    true_classes = sorted(list(set(np.unique(true))))
+    pred_classes = sorted(list(set(np.unique(pred))))
+    logger.info(f"Classes in true labels: {true_classes}")
+    logger.info(f"Classes in predictions: {pred_classes}")
+    
+    # Get all unique classes and handle ignore_classes first
+    all_classes = sorted(pred_classes)
     if ignore_classes:
-        labels = list(set(labels) - set(ignore_classes))
-        logger.info(f"OBS: Ignoring class(es): {ignore_classes} / {[mapping[i] for i in ignore_classes]}. "
-                    f"I.e., only epochs with true labels in {labels} / {[mapping[i] for i in labels]} will be considered.")
+        all_classes = sorted(list(set(all_classes) - set(ignore_classes)))
+        logger.info(f"Ignoring class(es) {ignore_classes}. Remaining classes: {all_classes}")
+        
+        # Also filter the data
+        keep_mask = ~np.isin(true, ignore_classes)
+        true = true[keep_mask]
+        pred = pred[keep_mask]
+    
+    # Define standard mappings for different classification scenarios
+    MAPPINGS = {
+        2: {  # Binary: Wake vs Sleep
+            0: "Wake",
+            1: "Sleep"
+        },
+        3: {  # 3-class: Wake, NREM, REM
+            0: "Wake",
+            1: "NREM",
+            2: "REM"
+        },
+        4: {  # 4-class: Wake, Light, Deep, REM
+            0: "Wake",
+            1: "Light",
+            2: "Deep",
+            3: "REM"
+        }
+    }
+    
+    # Determine number of classes from the filtered data
+    num_classes = len(all_classes)
+    
+    # Create mapping based on number of classes
+    if num_classes in MAPPINGS:
+        # Map the actual class values to the standard mapping
+        # Sort classes to ensure consistent mapping (lowest value = Wake, etc)
+        sorted_classes = sorted(all_classes)
+        mapping = {actual: MAPPINGS[num_classes][expected] 
+                  for expected, actual in enumerate(sorted_classes)}
+        logger.info(f"Using {num_classes}-class mapping: {mapping}")
+    else:
+        logger.warning(f"Unexpected number of classes ({num_classes}). "
+                      f"Expected one of: {list(MAPPINGS.keys())}. "
+                      f"Using generic class names.")
+        mapping = {i: f"Class_{i}" for i in all_classes}
+    
+    labels = all_classes  # Keep original class order
 
-    if group_non_rem:
-        ones = np.ones_like(true)
-        true = np.where(np.isin(true, [1, 2, 3]), ones, true)
-        pred = np.where(np.isin(pred, [1, 2, 3]), ones, pred)
-        labels.pop(labels.index(2))
-        labels.pop(labels.index(3))
-        mapping[1] = "NREM"
-        del mapping[2]
-        del mapping[3]
-        logger.info(f"Merging all NREM stages into one. New labels: {labels} / {[mapping[i] for i in labels]}")
+    if group_classes:
+        if group_classes == "wake_sleep":
+            # Group all sleep stages (1-4) into one class (1)
+            ones = np.ones_like(true)
+            true = np.where(np.isin(true, [1, 2, 3, 4]), ones, true)
+            pred = np.where(np.isin(pred, [1, 2, 3, 4]), ones, pred)
+            for i in [2, 3, 4]:
+                if i in labels:
+                    labels.remove(i)
+            mapping[1] = "Sleep"
+            for i in [2, 3, 4]:
+                if i in mapping:
+                    del mapping[i]
+            logger.info(f"Grouping into Wake/Sleep. New labels: {labels} / {[mapping[i] for i in labels]}")
+        elif group_classes == "non_rem":
+            # Group all NREM stages (1-3) into one class (1)
+            ones = np.ones_like(true)
+            true = np.where(np.isin(true, [1, 2, 3]), ones, true)
+            pred = np.where(np.isin(pred, [1, 2, 3]), ones, pred)
+            for i in [2, 3]:
+                if i in labels:
+                    labels.remove(i)
+            mapping[1] = "NREM"
+            for i in [2, 3]:
+                if i in mapping:
+                    del mapping[i]
+            logger.info(f"Grouping all NREM stages into one. New labels: {labels} / {[mapping[i] for i in labels]}")
+        else:
+            # Custom grouping using source:target mappings
+            try:
+                group_map = {}
+                for pair in group_classes.split(","):
+                    source, target = map(int, pair.split(":"))
+                    group_map[source] = target
+                for source, target in group_map.items():
+                    true = np.where(true == source, target, true)
+                    pred = np.where(pred == source, target, pred)
+                    if source in labels:
+                        labels.remove(source)
+                    if source in mapping:
+                        del mapping[source]
+                    if target not in labels:
+                        labels.append(target)
+                labels = sorted(list(set(labels)))
+                logger.info(f"Applied custom class grouping. New labels: {labels} / {[mapping[i] for i in labels]}")
+            except (ValueError, AttributeError) as e:
+                raise ValueError(f"Invalid group_classes format. Expected 'wake_sleep', 'non_rem' or "
+                               f"'source:target,...' (e.g. '2:1,3:1'). Got: {group_classes}") from e
 
     # Print macro metrics
     keep_mask = np.where(np.isin(true, labels))
@@ -222,7 +328,13 @@ def glob_to_metrics_df(true_pattern: str,
     logger.info(f"\n\n{p} Metrics:\n" + metrics_str + "\n")
 
     if plot_cm:
-        plot_and_save_cm(out_dir / f"cm_{p}.png", pred, true, len(labels), title=global_scores_str, cmap=cmap)
+        # Ensure output directory exists
+        os.makedirs(out_dir, exist_ok=True)
+        plot_path = os.path.join(out_dir, f"cm_{p}.png")
+        # Get labels in correct order for plotting
+        label_names = [mapping[i] for i in labels]
+        plot_and_save_cm(plot_path, pred, true, len(labels), title=global_scores_str, cmap=cmap, class_labels=label_names)
+        logger.info(f"Saved confusion matrix plot to: {plot_path}")
 
     return metrics
 
@@ -238,7 +350,7 @@ def entry_func(args=None):
         out_dir=args.out_dir,
         wake_trim_min=args.wake_trim_min,
         ignore_classes=args.ignore_classes,
-        group_non_rem=args.group_non_rem,
+        group_classes=args.group_classes,
         normalized=args.normalized,
         round=args.round,
         period_length_sec=args.period_length_sec,
