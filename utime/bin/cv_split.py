@@ -64,6 +64,7 @@ def get_argparser():
     parser.add_argument("--test_fraction", type=float,
                         default=_DEFAULT_TEST_FRACTION,
                         help="Fraction of data size used for test if CV=1. "
+                             "Set to 1.0 to use all recordings as test data. "
                              "(default={})".format(_DEFAULT_TEST_FRACTION))
     parser.add_argument("--max_test_subjects", type=int, required=False,
                         help="(Optional) specify a maximum number of subjects"
@@ -243,7 +244,12 @@ def get_split_sizes(subject_dirs, n_splits, args):
     n_val = int(np.ceil(n_total * args.validation_fraction))
     if args.max_validation_subjects:
         n_val = min(n_val, args.max_validation_subjects)
-    if n_val + n_test >= n_total:
+    # Allow test_fraction=1.0 to use all recordings for testing
+    if args.test_fraction == 1.0:
+        n_val = 0  # No validation set when using all for testing
+        n_test = n_total
+        n_train = 0
+    elif n_val + n_test >= n_total:
         raise ValueError("Too large test/validation_fraction - "
                          "No training samples left!")
     n_train = n_total - n_test - n_val
