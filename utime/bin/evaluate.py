@@ -72,6 +72,10 @@ def get_argparser():
                         help="Only evaluate on within wake_trim_min of wake "
                              "before and after sleep, as determined by true "
                              "labels")
+    parser.add_argument("--prob-threshold", type=float, default=None,
+                        help="Probability threshold for class assignment. If the maximum "
+                             "probability is below this threshold, the epoch will be "
+                             "classified as unknown (-1). If not set, uses argmax.")
     parser.add_argument("--overwrite", action='store_true',
                         help='Overwrite previous results at the output folder and previous log files')
     parser.add_argument("--log_file", type=str, default="evaluation_log",
@@ -260,7 +264,7 @@ def _predict_sequence_one_shot(study_pair, seq, model):
 
 
 def predict_on(study_pair, seq, model=None, model_func=None, n_aug=None,
-               argmax=True):
+               argmax=True, prob_threshold=None):
     """
     High-level function for predicting on a single SleepStudyPair
     ('study_pair')object as wrapped by a BatchSequence ('seq') object using a
@@ -269,14 +273,16 @@ def predict_on(study_pair, seq, model=None, model_func=None, n_aug=None,
     Arguments 'model' and 'model_func' are exclusive, exactly one must be set
 
     Args:
-        study_pair:  A SleepStudyPair object to predict on
-        seq:         A BatchSequence object that stores 'study_pair'
-        model:       An initialized and loaded model to predict with
-        model_func:  A callable which returns an intialized model
-        n_aug:       Number of times to predict on study_pair with random
-                     augmentation enabled
-        argmax:      If true, returns [n_periods, 1] sleep stage labels,
-                     otherwise returns [n_periods, n_classes] softmax scores.
+        study_pair:     A SleepStudyPair object to predict on
+        seq:           A BatchSequence object that stores 'study_pair'
+        model:         An initialized and loaded model to predict with
+        model_func:    A callable which returns an intialized model
+        n_aug:         Number of times to predict on study_pair with random
+                      augmentation enabled
+        argmax:        If true, returns [n_periods, 1] sleep stage labels,
+                      otherwise returns [n_periods, n_classes] softmax scores.
+        prob_threshold: If set, epochs with max probability below this threshold
+                      will be labeled as unknown (-1). Only used if argmax=True.
 
     Returns:
         An array of predicted sleep stage scores for 'study_pair'.
@@ -322,7 +328,15 @@ def predict_on(study_pair, seq, model=None, model_func=None, n_aug=None,
     if callable(getattr(pred, "numpy", None)):
         pred = pred.numpy()
     if argmax:
-        pred = pred.argmax(-1)
+        if prob_threshold is not None:
+            # Get max probabilities and their indices
+            max_probs = pred.max(axis=-1)
+            pred_classes = pred.argmax(axis=-1)
+            # Set predictions below threshold to -1 (unknown)
+            pred_classes[max_probs < prob_threshold] = -1
+            pred = pred_classes
+        else:
+            pred = pred.argmax(-1)
     return y, pred
 
 
@@ -402,7 +416,8 @@ def run_pred_and_eval(dataset,
                                  seq=seq,
                                  model=model,
                                  model_func=model_func,
-                                 n_aug=args.num_test_time_augment)
+                                 n_aug=args.num_test_time_augment,
+                                 prob_threshold=args.prob_threshold)
 
         if args.wake_trim_min:
             # Trim long periods of wake in start/end of true & prediction
@@ -419,23 +434,36 @@ def run_pred_and_eval(dataset,
         # Create a mask for usable data (labels within the valid class range)
         in_bounds_mask = (y >= 0) & (y < seq.n_classes)
         
+        # Create a mask for non-unknown predictions
+        pred_known_mask = pred >= 0
+        
+        # Combine masks to get data points where both true labels are valid and predictions are known
+        eval_mask = in_bounds_mask & pred_known_mask
+        
+        # Calculate percentage of unknown predictions
+        unknown_percent = 100 * (1 - pred_known_mask.mean())
+        logger.info(f"-- Unknown predictions: {unknown_percent:.2f}%")
+        
         # Mask the true and predicted labels
-        y_usable = y[in_bounds_mask]
-        pred_usable = pred[in_bounds_mask]
+        y_usable = y[eval_mask]
+        pred_usable = pred[eval_mask]
 
-        # Evaluate: dice scores with masked data
-        dice_pr_class = f1_score(y_true=y_usable.ravel(),
-                                 y_pred=pred_usable.ravel(),
-                                 labels=list(range(seq.n_classes)),
-                                 average=None,
-                                 zero_division=1)
-        logger.info(f"-- Dice scores:  {np.round(dice_pr_class, 4)}")
-        add_to_eval_df(dice_eval_df, id_, values=dice_pr_class)
+        if len(y_usable) > 0:  # Only evaluate if we have any valid predictions
+            # Evaluate: dice scores with masked data
+            dice_pr_class = f1_score(y_true=y_usable.ravel(),
+                                    y_pred=pred_usable.ravel(),
+                                    labels=list(range(seq.n_classes)),
+                                    average=None,
+                                    zero_division=1)
+            logger.info(f"-- Dice scores:  {np.round(dice_pr_class, 4)}")
+            add_to_eval_df(dice_eval_df, id_, values=dice_pr_class)
 
-        # Evaluate: kappa with masked data
-        kappa_pr_class = class_wise_kappa(y_usable, pred_usable, n_classes=seq.n_classes)
-        logger.info(f"-- Kappa scores: {np.round(kappa_pr_class, 4)}")
-        add_to_eval_df(kappa_eval_df, id_, values=kappa_pr_class)
+            # Evaluate: kappa with masked data
+            kappa_pr_class = class_wise_kappa(y_usable, pred_usable, n_classes=seq.n_classes)
+            logger.info(f"-- Kappa scores: {np.round(kappa_pr_class, 4)}")
+            add_to_eval_df(kappa_eval_df, id_, values=kappa_pr_class)
+        else:
+            logger.warning("No valid predictions available for evaluation (all unknown)")
 
         # Flag dependent evaluations:
         if args.plot_hypnograms:
