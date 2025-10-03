@@ -43,9 +43,8 @@ def get_argparser():
     parser.add_argument("--show_pairs", action="store_true",
                         help="Show the paired files (for debugging)")
     parser.add_argument("--group_classes", type=str, default=None,
-                        help="Specify how to group classes. Options: 'wake_sleep' (groups all sleep stages), "
-                             "'non_rem' (groups N1, N2, N3), or a comma-separated list of class mappings "
-                             "in format 'source1:target1,source2:target2'")
+                        help="Specify how to group classes. A comma-separated list of class mappings"
+                             " in format 'source1:target1,source2:target2'")
     parser.add_argument("--round", type=int, default=3,
                         help="Round float numbers, only applicable "
                              "with --normalized.")
@@ -135,10 +134,8 @@ def glob_to_metrics_df(true_pattern: str,
         out_dir: Output directory for results
         wake_trim_min: Minutes of wake to trim from start/end
         ignore_classes: List of class indices to ignore
-        group_classes: How to group classes. Options:
-            - 'wake_sleep': Groups all sleep stages into one
-            - 'non_rem': Groups N1, N2, N3 into one
-            - 'source:target,...': Custom grouping (e.g. '2:1,3:1')
+        group_classes: How to group classes. A comma-separated list of class mappings
+                       in format 'source1:target1,source2:target2'
         normalized: Whether to normalize confusion matrix
         round: Number of decimals to round to
         period_length_sec: Length of each period in seconds
@@ -203,6 +200,34 @@ def glob_to_metrics_df(true_pattern: str,
         keep_mask = ~np.isin(true, ignore_classes)
         true = true[keep_mask]
         pred = pred[keep_mask]
+
+    labels = all_classes  # Keep original class order
+
+    if group_classes:
+        try:
+            group_map = {}
+            for pair in group_classes.split(","):
+                source, target = map(int, pair.split(":"))
+                group_map[source] = target
+            # First pass: Map everything to temporary values to avoid conflicts
+            # Create temp mapping using negative numbers
+            temp_map = {source: -(i + 1) for i, (source, _) in enumerate(group_map.items())}
+            for source, temp in temp_map.items():
+                true = np.where(true == source, temp, true)
+                pred = np.where(pred == source, temp, pred)
+            
+            # Second pass: Map to final values
+            final_map = {temp_map[source]: target for source, target in group_map.items()}
+            for temp, target in final_map.items():
+                true = np.where(true == temp, target, true)
+                pred = np.where(pred == temp, target, pred)
+            
+            # Update labels with all unique target values from the mapping
+            labels = sorted(list(set(group_map.values())))
+            labels = sorted(list(set(labels)))
+            logger.info(f"Applied custom class grouping. New labels: {labels}")
+        except (ValueError, AttributeError) as e:
+            raise ValueError(f"Invalid group_classes format. Expected 'source:target,...' (e.g. '2:1,3:1'). Got: {group_classes}") from e
     
     # Define standard mappings for different classification scenarios
     MAPPINGS = {
@@ -224,13 +249,14 @@ def glob_to_metrics_df(true_pattern: str,
     }
     
     # Determine number of classes from the filtered data
-    num_classes = len(all_classes)
+    num_classes = len(labels)
     
     # Create mapping based on number of classes
     if num_classes in MAPPINGS:
         # Map the actual class values to the standard mapping
         # Sort classes to ensure consistent mapping (lowest value = Wake, etc)
-        sorted_classes = sorted(all_classes)
+        # Use labels instead of all_classes since labels contains the remapped classes
+        sorted_classes = sorted(labels)
         mapping = {actual: MAPPINGS[num_classes][expected] 
                   for expected, actual in enumerate(sorted_classes)}
         logger.info(f"Using {num_classes}-class mapping: {mapping}")
@@ -238,58 +264,7 @@ def glob_to_metrics_df(true_pattern: str,
         logger.warning(f"Unexpected number of classes ({num_classes}). "
                       f"Expected one of: {list(MAPPINGS.keys())}. "
                       f"Using generic class names.")
-        mapping = {i: f"Class_{i}" for i in all_classes}
-    
-    labels = all_classes  # Keep original class order
-
-    if group_classes:
-        if group_classes == "wake_sleep":
-            # Group all sleep stages (1-4) into one class (1)
-            ones = np.ones_like(true)
-            true = np.where(np.isin(true, [1, 2, 3, 4]), ones, true)
-            pred = np.where(np.isin(pred, [1, 2, 3, 4]), ones, pred)
-            for i in [2, 3, 4]:
-                if i in labels:
-                    labels.remove(i)
-            mapping[1] = "Sleep"
-            for i in [2, 3, 4]:
-                if i in mapping:
-                    del mapping[i]
-            logger.info(f"Grouping into Wake/Sleep. New labels: {labels} / {[mapping[i] for i in labels]}")
-        elif group_classes == "non_rem":
-            # Group all NREM stages (1-3) into one class (1)
-            ones = np.ones_like(true)
-            true = np.where(np.isin(true, [1, 2, 3]), ones, true)
-            pred = np.where(np.isin(pred, [1, 2, 3]), ones, pred)
-            for i in [2, 3]:
-                if i in labels:
-                    labels.remove(i)
-            mapping[1] = "NREM"
-            for i in [2, 3]:
-                if i in mapping:
-                    del mapping[i]
-            logger.info(f"Grouping all NREM stages into one. New labels: {labels} / {[mapping[i] for i in labels]}")
-        else:
-            # Custom grouping using source:target mappings
-            try:
-                group_map = {}
-                for pair in group_classes.split(","):
-                    source, target = map(int, pair.split(":"))
-                    group_map[source] = target
-                for source, target in group_map.items():
-                    true = np.where(true == source, target, true)
-                    pred = np.where(pred == source, target, pred)
-                    if source in labels:
-                        labels.remove(source)
-                    if source in mapping:
-                        del mapping[source]
-                    if target not in labels:
-                        labels.append(target)
-                labels = sorted(list(set(labels)))
-                logger.info(f"Applied custom class grouping. New labels: {labels} / {[mapping[i] for i in labels]}")
-            except (ValueError, AttributeError) as e:
-                raise ValueError(f"Invalid group_classes format. Expected 'wake_sleep', 'non_rem' or "
-                               f"'source:target,...' (e.g. '2:1,3:1'). Got: {group_classes}") from e
+        mapping = {i: f"Class_{i}" for i in labels}
 
     # Print macro metrics
     keep_mask = np.where(np.isin(true, labels))
