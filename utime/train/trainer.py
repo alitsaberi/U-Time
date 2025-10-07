@@ -29,7 +29,7 @@ class Trainer(object):
 
     def compile_model(self, optimizer, loss, metrics, reduction,
                       ignore_out_of_bounds_classes=False, check_sparse=False,
-                      optimizer_kwargs={}, loss_kwargs={}, metric_kwargs={}, **kwargs):
+                      optimizer_kwargs={}, loss_kwargs={}, metric_kwargs={}, loss_weights=None, **kwargs):
         """
         Compile the stored tf.keras Model instance stored in self.model
         Sets the loss function, optimizer and metrics
@@ -57,7 +57,7 @@ class Trainer(object):
 
         # Initialize optimizer, loss(es) and metric(s) from tf.keras, tf addons or utime.evaluation
         optimizer = init_optimizer(optimizer, **optimizer_kwargs)
-        losses = init_losses(losses, reduction, ignore_out_of_bounds_classes, **loss_kwargs)
+        losses = init_losses(losses, reduction, ignore_out_of_bounds_classes, loss_weights=loss_weights, **loss_kwargs)
         metrics = init_metrics(metrics, ignore_out_of_bounds_classes, **metric_kwargs)
 
         # Compile the model
