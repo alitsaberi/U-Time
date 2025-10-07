@@ -1,4 +1,5 @@
 import logging
+from typing import Callable, List, Optional, Any, Tuple
 import numpy as np
 from .elastic_deformation import elastic_transform
 from psg_utils.utils import exactly_one_specified
@@ -11,28 +12,38 @@ class Augmenter(object):
     Base augmenter class
 
     Stores an augmentation function that in __call__ applies to each element
-    of a batch (X, y) with per-element probability 'apply_prob'
+    of a batch (X, y) with per-element probability 'apply_prob'.
     If a batch of format (X, y, w) is passed to __call__, 'aug_weight' is
     multiplied by the previous weight stored in w.
 
+    The augmenter can be configured to exclude specific channels from augmentation
+    using the excluded_channels parameter.
+
     OBS: Operates 'in-place'
     """
-    def __init__(self, transform_func, apply_prob, aug_weight=0.5):
+    def __init__(self, 
+                 transform_func: Callable[..., Tuple[np.ndarray, np.ndarray]], 
+                 apply_prob: float, 
+                 aug_weight: float = 0.5,
+                 excluded_channels: Optional[List[int]] = None):
         """
         Args:
-            transform_func: A callable function accepting parameters
-                            (X, y, **kwargs) that modifies X in-place
-            apply_prob:     A [0-1] float giving the probabilty that
-                            transform_func is applied to an element of a batch
-            aug_weight:     Multiplicative factor applied to elements in
-                            (optional) list batch_w passed to transform_func.
-                            batch_w is a list of sample weights for each
-                            element in the batch.
+            transform_func:      A callable function accepting parameters
+                               (X, y, **kwargs) that modifies X in-place
+            apply_prob:         A [0-1] float giving the probabilty that
+                               transform_func is applied to an element of a batch
+            aug_weight:         Multiplicative factor applied to elements in
+                               (optional) list batch_w passed to transform_func.
+                               batch_w is a list of sample weights for each
+                               element in the batch.
+            excluded_channels:  Optional list of channel indices to exclude from
+                               augmentation. These channels will remain unchanged.
         """
         assert callable(transform_func)
         self.transform_func = transform_func
         self.apply_prob = apply_prob
         self.aug_weight = aug_weight
+        self.excluded_channels = excluded_channels or []
 
     def __repr__(self):
         return "<{}>".format(self.__name__)
@@ -85,14 +96,23 @@ class Augmenter(object):
         pos = [{k: kwargs[k][i] for k in pos_keys} for i in range(batch_size)]
         return glob, pos
 
-    def __call__(self, batch_x, batch_y, batch_w, **kwargs):
-        """ Augment a batch of data """
-        return self.augment(batch_x, batch_y, batch_w, **kwargs)
+    def __call__(self, 
+                batch_x: np.ndarray, 
+                batch_y: np.ndarray, 
+                batch_w: Optional[np.ndarray] = None, 
+                **kwargs: Any) -> None:
+        """ Augment a batch of data in-place """
+        self.augment(batch_x, batch_y, batch_w, **kwargs)
 
-    def augment(self, batch_x, batch_y, batch_w=None, **kwargs):
+    def augment(self, 
+                batch_x: np.ndarray, 
+                batch_y: np.ndarray, 
+                batch_w: Optional[np.ndarray] = None, 
+                **kwargs: Any) -> None:
         """
         Applies self.transform_func to elements of batch_x and batch_y with
-        element-wise probability self.apply_prob
+        element-wise probability self.apply_prob. Channels listed in excluded_channels
+        will not be modified by the augmentation.
 
         Assumes len(batch_x) == len(batch_y) (== len(batch_w))
 
@@ -102,10 +122,14 @@ class Augmenter(object):
         self.trans_func
 
         Args:
-            batch_x:  A batch of data
+            batch_x:  A batch of data with shape [batch_size, ..., n_channels]
             batch_y:  A batch of labels
             batch_w:  An optional batch of sample-weights
-            **kwargs: Parameters passed to the transform functon
+            **kwargs: Parameters passed to the transform function
+
+        Note:
+            This method operates in-place on batch_x, batch_y, and batch_w.
+            No return value.
         """
         # Only augment some of the images (determined by apply_prob)
         augment_mask = np.random.rand(len(batch_x)) <= self.apply_prob
@@ -114,14 +138,36 @@ class Augmenter(object):
         # (glob) and for only specific position-wise entities in batch_x and
         # batch_y
         glob, pos = self.separate_global_and_position_wise_kwargs(kwargs,
-                                                                  len(batch_x))
+                                                                len(batch_x))
 
         for i, augment in enumerate(augment_mask):
             if not augment:
                 continue
-            x_aug, y_aug = self.transform_func(batch_x[i], batch_y[i],
-                                               **glob, **pos[i])
-            batch_x[i], batch_y[i] = x_aug, y_aug
+
+            # If we have excluded channels, we need to handle them separately
+            if self.excluded_channels:
+                # Store original values of excluded channels
+                excluded_values = {ch: batch_x[i][..., ch].copy() 
+                                 for ch in self.excluded_channels}
+                
+                # Apply augmentation
+                x_aug, y_aug = self.transform_func(batch_x[i].copy(), batch_y[i].copy(),
+                                                 **glob, **pos[i])
+                
+                # Copy augmented values back to original arrays
+                batch_x[i] = x_aug
+                batch_y[i] = y_aug
+                
+                # Restore excluded channels
+                for ch, val in excluded_values.items():
+                    batch_x[i][..., ch] = val
+            else:
+                # Normal augmentation without channel exclusion
+                x_aug, y_aug = self.transform_func(batch_x[i].copy(), batch_y[i].copy(),
+                                                 **glob, **pos[i])
+                batch_x[i] = x_aug
+                batch_y[i] = y_aug
+
             if batch_w is not None:
                 batch_w[i] *= self.aug_weight
 
@@ -134,8 +180,8 @@ class RegionalAugmenter(Augmenter):
     See base Augmenter class.
     """
     def __init__(self, transform_func, min_fraction, max_fraction, apply_prob,
-                 log_sample, aug_weight):
-        super().__init__(transform_func, apply_prob, aug_weight)
+                 log_sample, aug_weight, excluded_channels: Optional[List[int]] = None):
+        super().__init__(transform_func, apply_prob, aug_weight, excluded_channels=excluded_channels)
 
         self.log_sample = log_sample
         self.min_fraction = float(min_fraction)
@@ -248,7 +294,7 @@ class GlobalElasticDeformations(Augmenter):
     """
     1D Elastic augmenter
     """
-    def __init__(self, alpha, sigma, apply_prob, aug_weight=0.5):
+    def __init__(self, alpha, sigma, apply_prob, aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         """
         Args:
             alpha: A number of tuple/list of two numbers specifying a range
@@ -262,10 +308,12 @@ class GlobalElasticDeformations(Augmenter):
             aug_weight: If a list of weights of len(batch_x) elements is passed
                         the aug_weight will multiply with the passed weight at
                         index i of batch_x if i in batch_x is transformed.
+            excluded_channels: Optional list of channel indices to exclude from
+                             augmentation. These channels will remain unchanged.
         """
         self.__name__ = "GlobalElasticDeformations"
         # Initialize base
-        super().__init__(elastic_transform, apply_prob, aug_weight)
+        super().__init__(elastic_transform, apply_prob, aug_weight, excluded_channels=excluded_channels)
 
         if isinstance(alpha, (list, tuple)):
             if len(alpha) != 2:
@@ -322,10 +370,10 @@ class GlobalAmplitude(Augmenter):
     Scales the global amplitude of a signal.
     Simply multiplies the signal values by a constant
     """
-    def __init__(self, min_scaling, max_scaling, apply_prob, aug_weight=0.5):
+    def __init__(self, min_scaling, max_scaling, apply_prob, aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         self.__name__ = "GlobalAmplitude"
         # Initialize base
-        super().__init__(self.scale, apply_prob, aug_weight)
+        super().__init__(self.scale, apply_prob, aug_weight, excluded_channels=excluded_channels)
 
         self.min_scaling = float(min_scaling)
         self.max_scaling = float(max_scaling)
@@ -341,10 +389,10 @@ class GlobalShift(Augmenter):
     """
     Shifts the signal by adding a (positive or negative) constant
     """
-    def __init__(self, min_shift, max_shift, apply_prob, aug_weight=0.5):
+    def __init__(self, min_shift, max_shift, apply_prob, aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         self.__name__ = "GlobalShift"
         # Initialize base
-        super().__init__(self.shift, apply_prob, aug_weight)
+        super().__init__(self.shift, apply_prob, aug_weight, excluded_channels=excluded_channels)
 
         self.min_shift = float(min_shift)
         self.max_shift = float(max_shift)
@@ -361,10 +409,10 @@ class GlobalGaussianNoise(Augmenter):
     Applies position-wise gaussian noise to all elements of a signal
     Note: Applies uniquely in each channel
     """
-    def __init__(self, sigma, apply_prob, mean=0, aug_weight=0.5):
+    def __init__(self, sigma, apply_prob, mean=0, aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         self.__name__ = "GlobalGaussianNoise"
         # Initialize base
-        super().__init__(self.apply_noise, apply_prob, aug_weight)
+        super().__init__(self.apply_noise, apply_prob, aug_weight, excluded_channels=excluded_channels)
 
         self.mean = float(mean)
         self.sigma = float(sigma)
@@ -379,9 +427,9 @@ class ChannelDropout(Augmenter):
     Drops whole channels at random with a certain probability, replacing
     all values in the channel with low sigma Gaussian noise.
     """
-    def __init__(self, drop_fraction, apply_prob, aug_weight=0.5):
+    def __init__(self, drop_fraction, apply_prob, aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         self.__name__ = "ChannelDropout"
-        super().__init__(self.drop_channels, apply_prob, aug_weight)
+        super().__init__(self.drop_channels, apply_prob, aug_weight, excluded_channels=excluded_channels)
         self.drop_fraction = drop_fraction
 
     def drop_channels(self, x, y):
@@ -407,12 +455,12 @@ class RegionalGaussianNoise(RegionalAugmenter):
     """
     def __init__(self, min_region_fraction, max_region_fraction,
                  apply_prob, mean=0, sigma=0.1, log_sample=True,
-                 aug_weight=0.5):
+                 aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         self.__name__ = "RegionalGaussianNoise"
         # Initialize base
         super().__init__(self.apply_noise, min_region_fraction,
                          max_region_fraction, apply_prob, log_sample,
-                         aug_weight)
+                         aug_weight, excluded_channels=excluded_channels)
         self.mean = float(mean)
         self.sigma = float(sigma)
 
@@ -432,11 +480,11 @@ class RegionalErase(RegionalAugmenter):
     gaussian noise
     """
     def __init__(self, min_region_fraction, max_region_fraction,
-                 apply_prob, log_sample=True, aug_weight=0.5):
+                 apply_prob, log_sample=True, aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         self.__name__ = "RegionalErase"
         super().__init__(self.random_erase, min_region_fraction,
                          max_region_fraction, apply_prob, log_sample,
-                         aug_weight)
+                         aug_weight, excluded_channels=excluded_channels)
 
     def random_erase(self, x, y):
         x, org_shape = self.reshape_x(x)
@@ -456,11 +504,11 @@ class RegionalSignalMix(RegionalAugmenter):
     of another region into the second region's place.
     """
     def __init__(self, min_region_fraction, max_region_fraction,
-                 apply_prob, log_sample=True, aug_weight=0.5):
+                 apply_prob, log_sample=True, aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         self.__name__ = "RegionalSignalMix"
         super().__init__(self.random_mix,
                          min_region_fraction, max_region_fraction,
-                         apply_prob, log_sample, aug_weight)
+                         apply_prob, log_sample, aug_weight, excluded_channels=excluded_channels)
 
     def random_mix(self, x, y):
         x, org_shape = self.reshape_x(x)
@@ -485,11 +533,11 @@ class RegionalSignFlip(RegionalAugmenter):
     Flips the sign of the signal within a sub-region.
     """
     def __init__(self, min_region_fraction, max_region_fraction,
-                 apply_prob, log_sample=True, aug_weight=0.5):
+                 apply_prob, log_sample=True, aug_weight=0.5, excluded_channels: Optional[List[int]] = None):
         self.__name__ = "RegionalSignFlip"
         super().__init__(self.sign_flip,
                          min_region_fraction, max_region_fraction,
-                         apply_prob, log_sample, aug_weight)
+                         apply_prob, log_sample, aug_weight, excluded_channels=excluded_channels)
 
     def sign_flip(self, x, y):
         return self.augment_region(x, y, transform_func=lambda x: -x)
