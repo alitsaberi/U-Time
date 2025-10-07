@@ -1,3 +1,4 @@
+import inspect
 import logging
 import numpy as np
 import tensorflow
@@ -81,23 +82,41 @@ def _assert_all_classes(list_of_classes, assert_subclass_of=None):
 
 def _init_losses_or_metrics(list_of_losses_or_metrics, ignore_out_of_bounds_classes, wrap_method_name=None, **init_kwargs):
     """
-    TODO
+    Initialize loss or metric classes/functions with appropriate kwargs based on their signatures.
+    
+    Args:
+        list_of_losses_or_metrics: List of loss/metric classes or functions to initialize
+        ignore_out_of_bounds_classes: Whether to wrap with out-of-bounds handling
+        wrap_method_name: Method name to wrap if needed
+        **init_kwargs: Initialization kwargs that will be filtered per class/function
     """
     for i, func_or_cls in enumerate(list_of_losses_or_metrics):
         try:
-            func_or_cls = func_or_cls(**init_kwargs)
+            # Get the signature - for class use __init__, for function use the function itself
+            if isinstance(func_or_cls, type):  # If it's a class
+                sig = inspect.signature(func_or_cls.__init__)
+            else:  # If it's a function
+                sig = inspect.signature(func_or_cls)
+            
+            # Filter kwargs to only include those accepted by this class/function
+            valid_params = sig.parameters.keys()
+            filtered_kwargs = {k: v for k, v in init_kwargs.items() 
+                            if k in valid_params}
+            
+            # Initialize class or call function with filtered kwargs
+            func_or_cls = func_or_cls(**filtered_kwargs)
         except TypeError as e:
             if "reduction" in str(e):
                 raise TypeError("All loss functions must currently be "
-                                "callable and accept the 'reduction' "
-                                "parameter specifying a "
-                                "tf.keras.losses.Reduction type. If you "
-                                "specified a keras loss function such as "
-                                "'sparse_categorical_crossentropy', change "
-                                "this to its corresponding loss class "
-                                "'SparseCategoricalCrossentropy'. If "
-                                "you implemented a custom loss function, "
-                                "please raise an issue on GitHub.") from e
+                              "callable and accept the 'reduction' "
+                              "parameter specifying a "
+                              "tf.keras.losses.Reduction type. If you "
+                              "specified a keras loss function such as "
+                              "'sparse_categorical_crossentropy', change "
+                              "this to its corresponding loss class "
+                              "'SparseCategoricalCrossentropy'. If "
+                              "you implemented a custom loss function, "
+                              "please raise an issue on GitHub.") from e
             else:
                 raise e
         if ignore_out_of_bounds_classes:
@@ -114,7 +133,7 @@ def _init_losses_or_metrics(list_of_losses_or_metrics, ignore_out_of_bounds_clas
     return list_of_losses_or_metrics
 
 
-def init_losses(loss_string_list, reduction, ignore_out_of_bounds_classes=False, **kwargs):
+def init_losses(loss_string_list, reduction, ignore_out_of_bounds_classes=False, loss_weights=None, **kwargs):
     """
     Takes a list of strings each naming a loss function to return. The string
     name should correspond to a function or class that is an attribute of
@@ -141,11 +160,17 @@ def init_losses(loss_string_list, reduction, ignore_out_of_bounds_classes=False,
                                                  addon_losses,
                                                  custom_loss_functions])
     _assert_all_classes(losses, assert_subclass_of=tensorflow.keras.losses.Loss)
-    return _init_losses_or_metrics(losses,
+    losses = _init_losses_or_metrics(losses,
                                    reduction=reduction,
                                    ignore_out_of_bounds_classes=ignore_out_of_bounds_classes,
                                    wrap_method_name='call',
                                    **kwargs)
+    
+    if len(losses) > 1:
+        loss_weights = loss_weights or [1.0] * len(losses)
+        losses = [custom_loss_functions.CombinedLoss(losses, weights=loss_weights)]
+
+    return losses
 
 
 def init_metrics(metric_string_list, ignore_out_of_bounds_classes=False, **kwargs):

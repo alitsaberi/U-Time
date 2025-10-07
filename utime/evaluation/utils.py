@@ -17,18 +17,24 @@ def ignore_out_of_bounds_classes_wrapper(func):
     def wrapper(true, pred, **kwargs):
         true.set_shape(pred.get_shape()[:-1] + [1])
         n_pred_classes = pred.get_shape()[-1]
-        true = tf.reshape(true, [-1])
-        pred = tf.reshape(pred, [-1, n_pred_classes])
-        mask = tf.where(tf.logical_and(
-                            tf.greater_equal(true, 0),
-                            tf.less(true, n_pred_classes)
-                        ),
-                        tf.ones_like(true),
-                        tf.zeros_like(true))
-        mask = tf.cast(mask, tf.bool)
-        true = tf.boolean_mask(true, mask, axis=0)
-        pred = tf.boolean_mask(pred, mask, axis=0)
-        return func(true, pred, **kwargs)
+        
+        # Create mask for valid classes while preserving dimensions
+        mask = tf.logical_and(
+            tf.greater_equal(tf.squeeze(true, -1), 0),
+            tf.less(tf.squeeze(true, -1), n_pred_classes)
+        )
+        
+        # Apply mask while preserving dimensions
+        # Expand mask for broadcasting with pred
+        expanded_mask = tf.expand_dims(mask, -1)
+        expanded_mask = tf.broadcast_to(expanded_mask, tf.shape(pred))
+        
+        # Zero out invalid entries instead of removing them
+        true_masked = tf.where(mask[..., tf.newaxis], true, tf.zeros_like(true))
+        pred_masked = tf.where(expanded_mask, pred, tf.zeros_like(pred))
+        
+        # Call the wrapped function
+        return func(true_masked, pred_masked, **kwargs)
     logger.info(f"Wrapping loss/metric function '{func}' to ignore 'true' "
                 f"classes with integer values outside of the model prediction integer range "
                 f"(e.g., ignoring true class labels of value 5 or -1 if n_classes=5, "
