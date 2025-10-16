@@ -69,6 +69,8 @@ def get_argparser():
                              "--use_dir_names flag is also set.")
     parser.add_argument("--overwrite", action="store_true",
                         help="Overwrite existing files of identical name and log files")
+    parser.add_argument("--ignore_extraction_errors", action="store_true",
+                        help="Ignore extraction errors and continue with next file.")
     parser.add_argument("--continue_", action="store_true",
                         help="Skip already existing files.")
     parser.add_argument("--log_file", type=str, default="extraction_log",
@@ -221,15 +223,23 @@ def extract(files, out_dir, channels, renamed_channels, trim_leading_seconds_dic
                                  f"anyway into the dictionary with key:value pair ({name}: 0.0) to effectively apply "
                                  f"no trimming.")
             trim_leading_secs = trim_leading_seconds_dict[name]
-        _extract(
-            file_=file_,
-            out_path=out_path,
-            channels=channels,
-            renamed_channels=renamed_channels,
-            trim_leading_sec=trim_leading_secs,
-            args=args
-        )
 
+        try:
+            _extract(
+                file_=file_,
+                out_path=out_path,
+                channels=channels,
+                renamed_channels=renamed_channels,
+                trim_leading_sec=trim_leading_secs,
+                args=args
+            )
+        except Exception as e:
+
+            if args.ignore_extraction_errors:
+                logger.warning(f"Error extracting file {file_}: {str(e)}")
+                continue
+           
+            raise
 
 def get_trim_dict(path):
     if not os.path.exists(path):

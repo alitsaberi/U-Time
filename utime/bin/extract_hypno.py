@@ -36,6 +36,8 @@ def get_argparser():
     parser.add_argument("--id_regex", type=str, default=None,
                          help='Regular expression pattern with a capture group to extract ID from filename. '
                               'E.g. "(.*)-nsrr" would extract "mesa-sleep-1234" from "mesa-sleep-1234-nsrr.xml"')
+    parser.add_argument("--ignore_extraction_errors", action="store_true",
+                        help="Ignore extraction errors and continue with next file.")
     parser.add_argument("--overwrite", action="store_true",
                         help="Overwrite existing files of identical name and log files")
     parser.add_argument("--log_file", type=str, default="hyp_extraction_log",
@@ -127,10 +129,16 @@ def run(args: Namespace) -> None:
             if not args.overwrite:
                 continue
             out.unlink()
-        inits, durs, stages = extract_ids_from_hyp_file(file_,
-                                                        period_length=30,
-                                                        extract_func=args.extract_func,
-                                                        replace_zero_durations=args.correct_zero_durations)
+        try:
+            inits, durs, stages = extract_ids_from_hyp_file(file_,
+                                                            period_length=30,
+                                                            extract_func=args.extract_func,
+                                                            replace_zero_durations=args.correct_zero_durations)
+        except Exception as e:
+            if args.ignore_extraction_errors:
+                logger.warning(f"Error extracting hypnogram from file {file_}: {str(e)}")
+                continue
+            raise
         if args.remove_offset:
             inits = remove_offset(inits)
         if args.fill_blanks:
