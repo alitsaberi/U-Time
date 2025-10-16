@@ -9,6 +9,9 @@ utime.io.high_level_file_loaders import load_psg
 
 import logging
 import os
+from pathlib import Path
+import re
+from typing import Optional, Union
 import numpy as np
 import pickle
 from argparse import ArgumentParser
@@ -33,9 +36,9 @@ def get_argparser():
                                         'supported. The extracted data will be'
                                         ' saved to .h5 files with minimal '
                                         'header information attributes.')
-    parser.add_argument("--file_regex", type=str,
-                        help='A glob statement matching all files to extract '
-                             'from')
+    parser.add_argument("--file_pattern", type=str,
+                        help='A glob pattern matching all files to extract '
+                             'from (e.g., "data/**/*.edf")')
     parser.add_argument("--out_dir", type=str,
                         help="Directory in which extracted files will be "
                              "stored")
@@ -56,6 +59,9 @@ def get_argparser():
     parser.add_argument("--use_dir_names", action="store_true",
                         help='Each PSG file will be saved as '
                              '<parent directory>.h5 instead of <file_name>.h5')
+    parser.add_argument("--id_regex", type=str, default=None,
+                         help='Regular expression pattern with a capture group to extract ID from filename. '
+                              'E.g. "(.*)-PSG" would extract "SC4051E0" from "SC4051E0-PSG"')
     parser.add_argument("--trim_leading_seconds_dict", type=str, default=None,
                         help="Path to .pickle dictionary of format ['filename' (without extension): float 'seconds'] "
                              "where 'seconds' is the number of seconds to trim from the start of file 'filename' before "
@@ -150,6 +156,36 @@ def _extract(file_,
     to_h5_file(out_path, psg, **header)
 
 
+def extract_id_with_regex(filename: Union[str, Path], pattern: Optional[str]) -> str:
+    """
+    Extract ID from filename using a regex pattern with a capture group
+    Example: with pattern "mesa-sleep-(.*)-nsrr" and filename "mesa-sleep-1234-nsrr.xml"
+    this would extract "1234"
+    
+    Args:
+        filename: The filename to extract ID from
+        pattern: Regex pattern with exactly one capture group
+        
+    Returns:
+        The extracted ID or the original filename if no match
+    """
+    if not pattern:
+        return str(filename)
+    
+    # Convert to Path and get stem (filename without extension)
+    path = Path(filename)
+    name = path.stem
+    
+    try:
+        match = re.search(pattern, name)
+        if match and match.groups():
+            return match.group(1)
+    except re.error as e:
+        logger.warning(f"Invalid regex pattern '{pattern}': {str(e)}")
+    
+    return name
+
+
 def extract(files, out_dir, channels, renamed_channels, trim_leading_seconds_dict, args):
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -158,6 +194,10 @@ def extract(files, out_dir, channels, renamed_channels, trim_leading_seconds_dic
             name = os.path.split(os.path.split(file_)[0])[-1]
         else:
             name = os.path.splitext(os.path.split(file_)[-1])[0]
+
+        if args.id_regex:
+            name = extract_id_with_regex(file_, args.id_regex)
+
         logger.info("\n------------------\n"
                     f"[*] {i+1}/{len(files)} Processing {name}")
         out_dir_subject = os.path.join(out_dir, name)
@@ -204,7 +244,7 @@ def get_trim_dict(path):
 
 def run(args):
     logger.info(f"Args dump: {vars(args)}")
-    files = glob(args.file_regex)
+    files = glob(args.file_pattern)
     out_dir = os.path.abspath(args.out_dir)
     if not os.path.exists(out_dir):
         os.mkdir(out_dir)
