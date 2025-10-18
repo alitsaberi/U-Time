@@ -37,6 +37,8 @@ def get_argparser():
     parser.add_argument("--out_dir", type=str, default="views",
                         help="Directory to store CV subfolders "
                              "(default=views")
+    parser.add_argument("--split_name", type=str, default=None,
+                        help="Name of the split folder. If not specified, for CV=1, the split will be named 'fixed_split' and for CV>1, the split will be named '<CV>_CV'.")
     parser.add_argument("--copy", action="store_true",
                         help="Copy files to CV-subfolders instead of "
                              "symlinking (not recommended)")
@@ -309,8 +311,10 @@ def run(args):
     """
     data_dir = os.path.abspath(args.data_dir)
     n_splits = int(args.CV)
-    if n_splits > 1:
-        out_dir = os.path.join(data_dir, args.out_dir, "%i_CV" % n_splits)
+    if args.split_name is not None:
+        out_dir = os.path.join(data_dir, args.out_dir, args.split_name)
+    elif n_splits > 1:
+        out_dir = os.path.join(data_dir, args.out_dir, f"{n_splits}_CV")
     else:
         out_dir = os.path.join(data_dir, args.out_dir, "fixed_split")
 
