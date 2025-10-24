@@ -90,7 +90,74 @@ def get_argparser():
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is None (no log file)")
+    parser.add_argument("--exclude_dirs", type=str, default=None,
+                        help="Path to a text file containing directory names to exclude from the dataset. "
+                             "Each line in the file should contain one directory name or pattern to exclude. "
+                             "These directories will be filtered out from the subject directories "
+                             "before creating CV splits.")
     return parser
+
+
+def read_exclude_file(exclude_file_path):
+    """
+    Read directory names to exclude from a text file.
+    
+    Args:
+        exclude_file_path: (str) Path to text file containing excluded directory names (one per line)
+        
+    Returns:
+        (list) List of directory names to exclude
+    """
+    if not exclude_file_path or not os.path.exists(exclude_file_path):
+        return []
+    
+    exclude_dirs = []
+    try:
+        with open(exclude_file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):  # Skip empty lines and comments
+                    exclude_dirs.append(line)
+        logger.info(f"Loaded {len(exclude_dirs)} exclusion patterns from {exclude_file_path}")
+    except Exception as e:
+        logger.warning(f"Could not read exclude file {exclude_file_path}: {e}")
+        return []
+    
+    return exclude_dirs
+
+
+def filter_excluded_dirs(subject_dirs, exclude_file_path):
+    """
+    Filter out directories that match any of the exclusion patterns from a file.
+    
+    Args:
+        subject_dirs: (list) List of subject directory paths
+        exclude_file_path: (str) Path to text file containing excluded directory names
+        
+    Returns:
+        (list) Filtered list of subject directories
+    """
+    exclude_dirs = read_exclude_file(exclude_file_path)
+    
+    if not exclude_dirs:
+        return subject_dirs
+    
+    filtered_dirs = []
+    for subject_dir in subject_dirs:
+        dir_name = os.path.basename(subject_dir)
+        should_exclude = False
+        
+        for exclude_pattern in exclude_dirs:
+            # Support both exact name matching and glob pattern matching
+            if exclude_pattern in dir_name or dir_name == exclude_pattern:
+                should_exclude = True
+                break
+        
+        if not should_exclude:
+            filtered_dirs.append(subject_dir)
+    
+    logger.info(f"Excluded {len(subject_dirs) - len(filtered_dirs)} directories matching exclusion patterns from {exclude_file_path}")
+    return filtered_dirs
 
 
 def assert_dir_structure(data_dir, out_dir):
@@ -333,6 +400,9 @@ def run(args):
 
     # Get subject dirs
     subject_dirs = glob(os.path.join(data_dir, args.subject_dir_pattern))
+    
+    # Filter out excluded directories
+    subject_dirs = filter_excluded_dirs(subject_dirs, args.exclude_dirs)
 
     # Create sub-folders
     create_view_folders(out_dir, n_splits)
