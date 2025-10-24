@@ -441,8 +441,11 @@ def run_pred_and_eval(dataset,
         eval_mask = in_bounds_mask & pred_known_mask
         
         # Calculate percentage of unknown predictions
-        unknown_percent = 100 * (1 - pred_known_mask.mean())
-        logger.info(f"-- Unknown predictions: {unknown_percent:.2f}%")
+        unknown_predictions_percent = 100 * (1 - pred_known_mask.mean())
+        unknown_true_percent = 100 * (1 - in_bounds_mask.mean())
+
+        logger.info(f"-- Unknown predictions: {unknown_predictions_percent:.2f}%")
+        logger.info(f"-- Unknown true: {unknown_true_percent:.2f}%")
         
         # Mask the true and predicted labels
         y_usable = y[eval_mask]
