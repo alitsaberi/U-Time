@@ -19,9 +19,11 @@ from utime.bin.evaluate import (predict_on,
                                 prepare_output_dir, get_and_load_model,
                                 get_and_load_one_shot_model, get_sequencer,
                                 get_out_dir)
+from utime.hyperparameters import YAMLHParams
 from psg_utils.io.channels import filter_non_available_channels
 from psg_utils.io.channels.utils import get_channel_group_combinations
 from psg_utils.errors import CouldNotLoadError
+from psg_utils.io.header import extract_header
 from utime.utils.scriptutils import add_logging_file_handler, with_logging_level_wrapper
 
 logger = logging.getLogger(__name__)
@@ -39,8 +41,8 @@ def get_argparser():
                              'hyperparameter file.')
     parser.add_argument("--data_per_prediction", type=int, default=None,
                         help='Number of samples that should make up each sleep'
-                             ' stage scoring. Defaults to sample_rate*30, '
-                             'giving 1 segmentation per 30 seconds of signal. '
+                             ' stage scoring. Defaults to sample_rate*period_length_sec, '
+                             'giving 1 segmentation per period_length_sec seconds of signal. '
                              'Set this to 1 to score every data point in the '
                              'signal.')
     parser.add_argument("--channels", nargs='*', type=str, default=None,
@@ -86,6 +88,12 @@ def get_argparser():
     parser.add_argument("--force_gpus", type=str, default="")
     parser.add_argument("--no_argmax", action="store_true",
                         help="Do not argmax prediction volume prior to save.")
+    parser.add_argument("--weight_channel", type=str, default=None,
+                        help="Name of a channel in the PSG file to extract as weights. "
+                             "The channel will be resampled to match prediction sample rate "
+                             "and downsampled to match prediction length (one value per period). "
+                             "Only valid when --no_argmax is used. Weight array will be saved "
+                             "as {study_id}_WEIGHT.npy alongside predictions.")
     parser.add_argument("--weights_file_name", type=str, required=False,
                         help="Specify the exact name of the weights file "
                              "(located in <project_dir>/model/) to use.")
@@ -103,13 +111,42 @@ def get_argparser():
                              "moved (including all content files) when the study cannot be loaded for 1 or more "
                              "of the requested channel combinations. E.g., used to filter out all studies that need "
                              "further manual investigation for data processing/loading issues.")
+    parser.add_argument("--group_classes", type=str, default=None,
+                        help="Specify how to group classes by summing probabilities. A comma-separated list of class mappings"
+                             " in format 'source1:target1,source2:target2'. For example, '2:1,3:1' will sum probabilities "
+                             "of classes 2 and 3 into class 1.")
     return parser
 
 
-def assert_args(args):
-    """ Not yet implemented """
-    pass
+def assert_group_classes(group_classes, n_classes):
 
+    if group_classes is None:
+        return
+
+    try:
+        group_map = {}
+        for pair in group_classes.split(","):
+            source, target = map(int, pair.split(":"))
+
+            if source < 0 or source >= n_classes:
+                raise ValueError(f"Invalid group_classes. Source class index out of range. "
+                                f"Expected range: 0 to {n_classes-1}. Got: {source}")
+
+            group_map[source] = target
+    except (ValueError, AttributeError) as e:
+        raise ValueError(f"Invalid group_classes format. Expected 'source:target,...' "
+                        f"(e.g. '2:1,3:1'). Got: {group_classes}") from e
+
+    if len(group_map) != n_classes:
+        raise ValueError(f"Invalid group_classes. Number of classes in group_classes does not match number of classes in the model. "
+                        f"Expected: {n_classes}. Got: {len(group_map)}")
+
+    target_classes = set(group_map.values())
+    if target_classes - set(range(len(target_classes))):
+        raise ValueError(f"Invalid group_classes. Expected target classes to be in range 0 to {len(target_classes)-1}. Got: {target_classes - set(range(len(target_classes)))}")
+
+    logger.info(f"Grouping classes: {group_map}")
+    return group_map
 
 def set_new_strip_func(dataset_hparams, strip_func):
     if 'strip_func' not in dataset_hparams:
@@ -217,19 +254,18 @@ def get_datasets(hparams, args):
 def predict_study(sleep_study_pair, seq, model, model_func, num_test_time_augment=0, no_argmax=False):
     # Predict
     with sleep_study_pair.loaded_in_context():
-        y, pred = predict_on(study_pair=sleep_study_pair,
+        pred = predict_on(study_pair=sleep_study_pair,
                              seq=seq,
                              model=model,
                              model_func=model_func,
                              n_aug=num_test_time_augment,
                              argmax=False)
-    org_pred_shape = pred.shape
     if callable(getattr(pred, "numpy", None)):
         pred = pred.numpy()
-    pred, y = pred.reshape(-1, pred.shape[-1]), y.reshape(-1, 1)
+    pred = pred.reshape(-1, pred.shape[-1])
     if not no_argmax:
         pred = pred.argmax(-1)
-    return pred, y, org_pred_shape
+    return pred
 
 
 def get_save_path(out_dir, file_name, sub_folder_name=None):
@@ -260,59 +296,135 @@ def get_updated_majority_voted(majority_voted, pred):
     return majority_voted
 
 
-def run_pred_on_channels(sleep_study_pair, seq, model, model_func, num_test_time_augment=0):
-    pred, y, org_pred_shape = predict_study(
-        sleep_study_pair=sleep_study_pair,
-        seq=seq,
-        model=model,
-        model_func=model_func,
-        num_test_time_augment=num_test_time_augment,
-        no_argmax=True
-    )
-    if len(org_pred_shape) == 3:
-        y = np.repeat(y, org_pred_shape[1])
-    return pred, y
+def extract_weight_channel(sleep_study_pair, seq, weight_channel_name, data_per_prediction):
+    
+    try:
+        # Extract header to get channel names
+        header = extract_header(sleep_study_pair.psg_file_path, sleep_study_pair.header_file_path)
+        channel_names = header.get('channel_names', [])
+        
+        if weight_channel_name not in channel_names:
+            logger.warning(f"Weight channel '{weight_channel_name}' not found in PSG file. "
+                          f"Available channels: {channel_names}")
+            return None
+        
+        sleep_study_pair.select_channels = [weight_channel_name]
+        seq.n_channels = 1
+        weight_data = seq.get_single_study_full_seq(sleep_study_pair.identifier)[0].reshape(-1)
+        
+        # Pad to whole number of periods with zeros if needed
+        n_samples = len(weight_data)
+        if n_samples % data_per_prediction != 0:
+            padding_needed = data_per_prediction - (n_samples % data_per_prediction)
+            weight_data = np.pad(weight_data, (0, padding_needed), mode='constant', constant_values=0)
+        
+        # Reshape to (n_predictions, data_per_prediction) and take mean (or other aggregation)
+        weight_data = weight_data.reshape(-1, data_per_prediction)
+        weights = np.mean(weight_data, axis=1)
+
+        logger.debug(f"Weights min: {weights.min()}, max: {weights.max()}")
+        logger.info(f"Extracted weight channel '{weight_channel_name}' with shape {weights.shape}")
+
+        return weights
+    except Exception as e:
+        logger.warning(f"Failed to extract weight channel '{weight_channel_name}': {e}")
+        return None
 
 
-def run_pred_on_pair(sleep_study_pair, seq, model, model_func, out_dir, channel_sets, args):
+def group_class_probabilities(array, group_map):
+    
+    num_classes_final = len(set(group_map.values()))
+    
+    # Initialize output array
+    grouped_pred = np.zeros((*array.shape[:-1], num_classes_final), dtype=array.dtype)
+    
+    # Sum probabilities for mapped classes
+    for source_class, target_class in group_map.items():
+        grouped_pred[..., target_class] += array[..., source_class]
+    
+    logger.info(f"Grouped probabilities from {array.shape[-1]} to {num_classes_final} classes.")
+    
+    return grouped_pred
+
+
+def group_class_labels(array, group_map):
+
+    grouped_array = array.copy()
+
+    for source_class, target_class in group_map.items():
+        grouped_array = np.where(array == source_class, target_class, grouped_array)
+    
+    return grouped_array
+
+
+def run_pred_on_pair(sleep_study_pair, seq, model, model_func, out_dir, channel_sets, group_map, args):
     majority_voted = None
     path_mj = get_save_path(out_dir, sleep_study_pair.identifier + "_PRED.npy", "majority")
     path_true = get_save_path(out_dir, sleep_study_pair.identifier + "_TRUE.npy", None)
+    
+    with sleep_study_pair.loaded_in_context():
+        true = sleep_study_pair.get_all_hypnogram_periods()
+        
+        weight_array = None
+        if args.weight_channel:
+            weight_array = extract_weight_channel(
+                sleep_study_pair=sleep_study_pair,
+                seq=seq,
+                weight_channel_name=args.weight_channel,
+                data_per_prediction=args.data_per_prediction
+            )
+    
     for k, (sub_folder_name, channels_to_load) in enumerate(channel_sets):
-        # Get prediction out path
+
         path_pred = get_save_path(out_dir, sleep_study_pair.identifier + "_PRED.npy", sub_folder_name)
+        path_weight = get_save_path(out_dir, sleep_study_pair.identifier + "_WEIGHT.npy", sub_folder_name)
 
-        # If not --overwrite set, and path exists, we skip it here
-        if os.path.exists(path_pred) and not args.overwrite:
-            logger.info(f"Skipping (channels={channels_to_load}) - already exists and --overwrite not set.")
-            # Load and increment the majority_voted array before continue
-            majority_voted = get_updated_majority_voted(majority_voted, np.load(path_pred))
-            continue
-
-        # Load and predict on the set channels
         if channels_to_load:
             logger.info(f" -- Channels: {channels_to_load}")
             sleep_study_pair.select_channels = channels_to_load
         seq.n_channels = sleep_study_pair.n_channels
 
         # Get the prediction and true values
-        pred, y = run_pred_on_channels(
+        pred = predict_study(
             sleep_study_pair=sleep_study_pair,
             seq=seq,
             model=model,
             model_func=model_func,
-            num_test_time_augment=args.num_test_time_augment
+            no_argmax=True
         )
-        # Sum the predictions into the majority_voted array
+        
+        # Group classes if needed (for majority vote consistency)
+        if group_map:
+            pred = group_class_probabilities(pred, group_map)                
+
         majority_voted = get_updated_majority_voted(majority_voted, pred)
 
-        if args.save_true and not os.path.exists(path_true):
-            # Save true to disk, only save once if multiple channel sets
-            # Note that we save the true values to the folder storing
-            # results for each channel if multiple channel sets
-            save_file(path_true, arr=y, argmax=False)
-        # Save prediction
-        save_file(path_pred, arr=pred, argmax=not args.no_argmax)
+        if not os.path.exists(path_pred) or args.overwrite:
+            save_file(path_pred, arr=pred, argmax=not args.no_argmax)
+        else:
+            logger.info(f"Prediction file already exists at {path_pred}, skipping (use --overwrite to replace)")
+        
+        if weight_array is not None:
+            if not os.path.exists(path_weight) or args.overwrite:
+                logger.info(f"Saving weight channel to {path_weight}")
+                save_file(path_weight, arr=weight_array, argmax=False)
+            else:
+                logger.info(f"Weight file already exists at {path_weight}, skipping (use --overwrite to replace)")
+    
+    if args.save_true:
+
+        if true is None:
+            raise ValueError(f"True values are not available for {sleep_study_pair.identifier}")
+
+        if group_map:
+            true = group_class_labels(true, group_map)
+
+        if not os.path.exists(path_true) or args.overwrite:
+            logger.info(f"Saving true to {path_true}")
+            save_file(path_true, arr=true, argmax=False)
+        else:
+            logger.info(f"True file already exists at {path_true}, skipping (use --overwrite to replace)")
+    
     if args.majority:
         if not os.path.exists(path_mj) or args.overwrite:
             save_file(path_mj, arr=majority_voted, argmax=not args.no_argmax)
@@ -325,6 +437,7 @@ def run_pred(dataset,
              model,
              model_func,
              hparams,
+             group_map,
              args):
     """
     Run prediction on a all entries of a SleepStudyDataset
@@ -362,6 +475,7 @@ def run_pred(dataset,
                     model_func=model_func,
                     out_dir=out_dir,
                     channel_sets=channel_sets,
+                    group_map=group_map,
                     args=args
                 )
             except (CouldNotLoadError, RuntimeError) as e:
@@ -381,7 +495,6 @@ def run(args):
     """
     Run the script according to args - Please refer to the argparser.
     """
-    assert_args(args)
     logger.info(f"Args dump: \n{vars(args)}")
     # Check project folder is valid
     from utime.utils.scriptutils import assert_project_folder
@@ -395,14 +508,14 @@ def run(args):
         out_dir = args.out_dir
     prepare_output_dir(out_dir, True)
 
-    # Get hyperparameters and init all described datasets
-    from utime.hyperparameters import YAMLHParams
     hparams = YAMLHParams(Defaults.get_hparams_path(project_dir))
     hparams["build"]["data_per_prediction"] = args.data_per_prediction
     if args.channels:
         hparams["select_channels"] = args.channels
         hparams["channel_sampling_groups"] = None
         logger.info(f"Evaluating using channels {args.channels}")
+
+    group_map = assert_group_classes(args.group_classes, hparams["build"]["n_classes"])
 
     # Get model
     find_and_set_gpus(args.num_gpus, args.force_gpus)
@@ -433,6 +546,7 @@ def run(args):
                  model=model,
                  model_func=model_func,
                  hparams=hparams,
+                 group_map=group_map,
                  args=args)
 
 
