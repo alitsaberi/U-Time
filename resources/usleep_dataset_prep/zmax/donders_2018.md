@@ -3,10 +3,7 @@
 #### Export to USleep format
 
 #### Views command
-! WARNING: Not necessary since this was used only for testing
-```
-ut cv_split --data_dir [path_to_data_directory] --out_dir [path_to_output_directory] --subject_dir_pattern 'P*' --CV 1 --subject_matching_regex 'P(\d{1,2})-.*' --validation_fraction 0.2 --test_fraction 0.0
-```
+Not necessary since this was used only for testing
 
 Notes: 
 - example nameing: 'P8_night3'

@@ -1,13 +1,15 @@
 ## Dataset: ISRUC-SG2
 
-#### Extract command
+#### Extract commands
+
+##### Extract EEG and EOG channels
 ```
-ut extract --file_regex '[LOCAL_PATH]/ISRUC/multi_visit*/*.edf' --out_dir '[LOCAL_PATH]/processed/isruc-sg2/' --resample 128 --use_dir_names --channels 'F3-M2' 'C3-M2' 'O1-M2' 'F4-M1' 'C4-M1' 'O2-M1' 'E1-M2' 'E2-M1'
+ut extract --file_pattern "$ROOT_PATH/source/ISRUC/multi_visit*/*.edf" --out_dir "$ROOT_PATH/raw/isruc-sg2/" --resample 128 --use_dir_names --channels 'F3-M2' 'C3-M2' 'O1-M2' 'F4-M1' 'C4-M1' 'O2-M1' 'E1-M2' 'E2-M1'
 ```
 
 #### Extract hypno command
 ```
-ut extract_hypno --file_regex '[LOCAL_PATH]/ISRUC/multi_visit*/*_1-HYP.npz' --out_dir '[LOCAL_PATH]/processed/isruc-sg2/'
+ut extract_hypno --file_regex "$ROOT_PATH/source/ISRUC/multi_visit*/*_1-HYP.npz" --out_dir "$ROOT_PATH/raw/isruc-sg2/"
 ```
 
 #### Views command

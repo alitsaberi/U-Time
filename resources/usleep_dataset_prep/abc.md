@@ -1,18 +1,25 @@
 ## Dataset: ABC
 
-#### Extract command
+#### Extract commands
+
+##### Extract EEG and EOG channels
 ```
-ut extract --file_regex '[LOCAL_PATH]/abc/polysomnography/edfs/*/*.edf' --out_dir '[LOCAL_PATH]/processed/abc/' --resample 128 --channels F3-M2 F4-M1 C3-M2 C4-M1 O1-M2 O2-M1 E1-M2 E2-M1
+ut extract --file_pattern "$ROOT_PATH/source/abc/polysomnography/edfs/*/*.edf" --out_dir "$ROOT_PATH/raw/abc/" --resample 128 --channels F3-M2 F4-M1 C3-M2 C4-M1 O1-M2 O2-M1 E1-M2 E2-M1
+```
+
+#### Extract ECG and PPG channels
+```
+ut extract --file_pattern "$ROOT_PATH/source/abc/polysomnography/edfs/*/*.edf" --out_dir "$ROOT_PATH/raw/abc/" --resample 128 --channels ECG1 ECG2 PLETH --rename ECG1 ECG2 PPG 
 ```
 
 #### Extract hypno command
 ```
-ut extract_hypno --file_regex '[LOCAL_PATH]/abc/polysomnography/annotations-events-nsrr/*/*.xml' --out_dir '[LOCAL_PATH]/processed/abc/'
+ut extract_hypno --file_regex "$ROOT_PATH/source/abc/polysomnography/annotations-events-nsrr/*/*.xml" --out_dir "$ROOT_PATH/raw/abc/"
 ```
 
 #### Views command
 ```
-ut cv_split --data_dir '[LOCAL_PATH]/processed/abc/' --subject_dir_pattern 'abc*' --CV 1 --validation_fraction 0.10 --max_validation_subjects 50 --test_fraction 0.15 --max_test_subjects 100 --subject_matching_regex '.*?-.*?-(.*)'
+ut cv_split --data_dir "$ROOT_PATH/processed/abc/" --subject_dir_pattern 'abc*' --CV 1 --validation_fraction 0.10 --max_validation_subjects 50 --test_fraction 0.15 --max_test_subjects 100 --subject_matching_regex '.*?-.*?-(.*)'
 ```
 
 Notes: 
