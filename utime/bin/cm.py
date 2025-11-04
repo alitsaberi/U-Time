@@ -11,6 +11,7 @@ import pandas as pd
 from argparse import ArgumentParser
 from glob import glob
 from sklearn.metrics import confusion_matrix, f1_score, cohen_kappa_score
+from scipy import stats
 from utime.evaluation import concatenate_true_pred_pairs
 from utime.evaluation import (f1_scores_from_cm, precision_scores_from_cm,
                               recall_scores_from_cm)
@@ -68,6 +69,14 @@ def get_argparser():
                         help="Save the confusion matrix to a file.")
     parser.add_argument("--cmap", type=str, default=DEFAULT_CMAP,
                         help="Matplotlib colormap to use for the confusion matrix.")
+    parser.add_argument("--apply_argmax", action="store_true",
+                        help="Apply argmax to predictions before calculating metrics. "
+                             "Useful when predictions are probability distributions.")
+    parser.add_argument("--aggregate_window", type=int, default=None,
+                        help="Aggregate predictions over time windows of specified size. "
+                             "Applied to predictions only (not true labels). "
+                             "If predictions are already argmaxed (apply_argmax not set), uses mode. "
+                             "Otherwise uses mean (on probabilities before argmax).")
     return parser
 
 
@@ -98,20 +107,9 @@ def wake_trim(pairs, wake_trim_min, period_length_sec):
         ])
     return trimmed_pairs
 
-
-def trim(p1, p2):
-    """
-    Trims a pair of label arrays (true/pred normally) to equal length by
-    removing elements from the tail of the longest array.
-    This assumes that the arrays are aligned to the first element.
-    """
-    diff = len(p1) - len(p2)
-    if diff > 0:
-        p1 = p1[:len(p2)]
-    else:
-        p2 = p2[:len(p1)]
-    return p1, p2
-
+def aggregate_predictions_time(pred, window_size, use_mode):
+    pred = pred.reshape(-1, window_size, pred.shape[-1])
+    return stats.mode(pred, axis=1)[0].flatten() if use_mode else np.mean(pred, axis=1)
 
 def glob_to_metrics_df(true_pattern: str,
                        pred_pattern: str,
@@ -124,7 +122,9 @@ def glob_to_metrics_df(true_pattern: str,
                        period_length_sec: int = 30,
                        show_pairs: bool = False,
                        plot_cm: bool = False,
-                       cmap: str = DEFAULT_CMAP):
+                       cmap: str = DEFAULT_CMAP,
+                       apply_argmax: bool = False,
+                       aggregate_window: int = None):
     """
     Run the script according to the provided arguments.
 
@@ -142,6 +142,8 @@ def glob_to_metrics_df(true_pattern: str,
         show_pairs: Whether to show file pairs
         plot_cm: Whether to plot confusion matrix
         cmap: Matplotlib colormap for confusion matrix
+        apply_argmax: Whether to apply argmax to predictions (for probability distributions)
+        aggregate_window: Size of time window for aggregating predictions (applied to predictions only)
     """
     logger.info("Looking for files...")
     true = sorted(glob(true_pattern))
@@ -173,14 +175,40 @@ def glob_to_metrics_df(true_pattern: str,
     def load_array(files):
         return [np.load(f)["arr_0"] if os.path.splitext(f)[-1] == ".npz" else np.load(f) for f in files]
     np_pairs = list(map(load_array, pairs))
-    for i, (p1, p2) in enumerate(np_pairs):
-        if len(p1) != len(p2):
-            logger.warning(f"Not equal lengths: {pairs[i]} {f'{len(p1)}/{len(p2)}'}. Trimming...")
-            np_pairs[i] = trim(p1, p2)
+    
+    # Apply time-wise aggregation to predictions if requested
+    if aggregate_window is not None:
+        logger.info(f"Aggregating predictions over time windows of size {aggregate_window}...")
+        # Determine if we should use mode (labels) or mean (probabilities)
+        use_mode = not apply_argmax  # If apply_argmax is not set, predictions are already labels
+        if use_mode:
+            logger.info("Using mode aggregation (predictions are already labels)")
+        else:
+            logger.info("Using mean aggregation (predictions are probabilities)")
+        
+        for i, (p1, p2) in enumerate(np_pairs):
+            # Aggregate predictions only
+            pred_aggregated = aggregate_predictions_time(p2, aggregate_window, use_mode=use_mode)
+            
+            if len(p1) != len(pred_aggregated):
+                raise ValueError(f"True labels and aggregated predictions have different lengths: {len(p1)} != {len(pred_aggregated)}")
+            
+            np_pairs[i] = (p1, pred_aggregated)
+    
+    # Apply argmax to predictions if requested
+    if apply_argmax:
+        logger.info("Applying argmax to predictions...")
+        for i, (p1, p2) in enumerate(np_pairs):
+            if p2.ndim == 1:
+                raise ValueError("Predictions are already argmaxed, but apply_argmax flag is set")
+
+            np_pairs[i] = (p1, np.argmax(p2, axis=-1))
+    
     if wake_trim_min:
         logger.info("OBS: Wake trimming of {} minutes (period length {} sec)"
                     "".format(wake_trim_min, period_length_sec))
         np_pairs = wake_trim(np_pairs, wake_trim_min, period_length_sec)
+        
     # Load and concatenate data first
     true, pred = map(lambda x: x.astype(np.uint8).reshape(-1, 1), concatenate_true_pred_pairs(pairs=np_pairs))
     
@@ -228,6 +256,15 @@ def glob_to_metrics_df(true_pattern: str,
             logger.info(f"Applied custom class grouping. New labels: {labels}")
         except (ValueError, AttributeError) as e:
             raise ValueError(f"Invalid group_classes format. Expected 'source:target,...' (e.g. '2:1,3:1'). Got: {group_classes}") from e
+    
+    if ignore_classes:
+        labels = sorted(list(set(labels) - set(ignore_classes)))
+        logger.info(f"Ignoring class(es) {ignore_classes}. Remaining classes: {labels}")
+        
+        # Also filter the data
+        keep_mask = ~np.isin(true, ignore_classes)
+        true = true[keep_mask]
+        pred = pred[keep_mask]
     
     # Define standard mappings for different classification scenarios
     MAPPINGS = {
@@ -319,6 +356,10 @@ def entry_func(args=None):
     parser = get_argparser()
     args = parser.parse_args(args)
     add_logging_file_handler(args.log_file, args.overwrite, mode="w")
+
+    if args.aggregate_window is not None and args.aggregate_window <= 1:
+        raise ValueError("Aggregate window must be greater than 1")
+
     glob_to_metrics_df(
         true_pattern=args.true_pattern,
         pred_pattern=args.pred_pattern,
@@ -332,6 +373,8 @@ def entry_func(args=None):
         show_pairs=args.show_pairs,
         plot_cm=args.plot_cm,
         cmap=args.cmap,
+        apply_argmax=args.apply_argmax,
+        aggregate_window=args.aggregate_window,
     )
 
 

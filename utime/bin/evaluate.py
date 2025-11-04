@@ -291,7 +291,6 @@ def predict_on(study_pair, seq, model=None, model_func=None, n_aug=None,
     if bool(model) == bool(model_func):
         raise RuntimeError("Must specify either model or model_func, "
                            "got both or neither.")
-    y = study_pair.get_all_hypnogram_periods()
     if not seq.margin:
         # Not a sequence model (no margin on center sleep segment)
         if callable(model_func):
@@ -337,7 +336,8 @@ def predict_on(study_pair, seq, model=None, model_func=None, n_aug=None,
             pred = pred_classes
         else:
             pred = pred.argmax(-1)
-    return y, pred
+            
+    return pred
 
 
 def get_sequencer(dataset, hparams):
