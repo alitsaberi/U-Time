@@ -145,7 +145,7 @@ class Trainer(object):
             callbacks = [Validation(val, max_val_studies_per_dataset), MeanReduceLogArrays()] + callbacks
 
         # Add various callbacks for plotting learning curves etc.
-        callbacks.append(LearningCurve())
+        # callbacks.append(LearningCurve())
         # callbacks.append(MemoryConsumption(max_gib=45))
         # callbacks.append(CarbonUsageTracking(epochs=n_epochs, add_to_logs=False))
 

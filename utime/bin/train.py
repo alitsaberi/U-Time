@@ -265,7 +265,7 @@ def run(args):
     with strategy.scope():
         model = init_model(hparams["build"], clear_previous=False)
         if parameter_file:
-            load_from_file(model, parameter_file, by_name=True, skip_mismatch=hparams["build"]["skip_mismatch"])
+            load_from_file(model, parameter_file, by_name=True, skip_mismatch=hparams["build"].get("skip_mismatch", False))
 
         # Prepare a trainer object and compile the model
         trainer = Trainer(model)
