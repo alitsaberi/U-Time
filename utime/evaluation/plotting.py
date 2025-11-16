@@ -81,7 +81,8 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
     classes = np.arange(n_classes)
     cm = confusion_matrix(y_true, y_pred, labels=classes)
     if normalize:
-        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        cm = cm.astype(np.float64)
+        cm /= cm.sum(axis=1, keepdims=True)
 
     # Use provided labels or generate default ones
     if class_labels:

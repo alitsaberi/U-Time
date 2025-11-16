@@ -197,7 +197,7 @@ def glob_to_metrics_df(true_pattern: str,
         logger.info(f"Ignoring class(es) {ignore_classes}. Remaining classes: {all_classes}")
         
         # Also filter the data
-        keep_mask = ~np.isin(true, ignore_classes)
+        keep_mask = ~(np.isin(true, ignore_classes) | np.isin(pred, ignore_classes))
         true = true[keep_mask]
         pred = pred[keep_mask]
 
@@ -267,26 +267,15 @@ def glob_to_metrics_df(true_pattern: str,
         mapping = {i: f"Class_{i}" for i in labels}
 
     # Print macro metrics
-    keep_mask = np.where(np.isin(true, labels))
     global_scores_str = (
-        f"Accuracy: {np.round((true[keep_mask] == pred[keep_mask]).mean(), round)}\n"
-        f"Macro F1: {np.round(f1_score(true[keep_mask], pred[keep_mask], average='macro'), round)}\n"
-        f"Micro F1: {np.round(f1_score(true[keep_mask], pred[keep_mask], average='micro'), round)}\n"
-        f"Kappa:    {np.round(cohen_kappa_score(true[keep_mask], pred[keep_mask]), round)}"
+        f"Accuracy: {np.round((true == pred).mean(), round)}\n"
+        f"Macro F1: {np.round(f1_score(true, pred, average='macro'), round)}\n"
+        f"Micro F1: {np.round(f1_score(true, pred, average='micro'), round)}\n"
+        f"Kappa:    {np.round(cohen_kappa_score(true, pred), round)}"
     )
     logger.info(f"Unweighted global scores:\n{global_scores_str}")
 
     cm = confusion_matrix(true, pred, labels=labels)
-    if normalized:
-        cm = cm.astype(np.float64)
-        cm /= cm.sum(axis=1, keepdims=True)
-
-    # Pretty print
-    cm = pd.DataFrame(data=cm,
-                      index=["True {}".format(mapping[i]) for i in labels],
-                      columns=["Pred {}".format(mapping[i]) for i in labels])
-    p = "Raw" if not normalized else "Normed"
-    logger.info(f"\n\n{p} Confusion Matrix:\n" + str(cm.round(round)) + "\n")
 
     # Print stage-wise metrics
     f1 = f1_scores_from_cm(cm)
@@ -300,7 +289,18 @@ def glob_to_metrics_df(true_pattern: str,
     metrics = metrics.T
     metrics["mean"] = metrics.mean(axis=1)
     metrics_str = str(np.round(metrics.T, round))
-    logger.info(f"\n\n{p} Metrics:\n" + metrics_str + "\n")
+    logger.info("Metrics:\n" + metrics_str + "\n")
+
+    if normalized:
+        cm = cm.astype(np.float64)
+        cm /= cm.sum(axis=1, keepdims=True)
+
+    # Pretty print
+    cm = pd.DataFrame(data=cm,
+                      index=["True {}".format(mapping[i]) for i in labels],
+                      columns=["Pred {}".format(mapping[i]) for i in labels])
+    p = "Raw" if not normalized else "Normed"
+    logger.info(f"{p} Confusion Matrix:\n" + str(cm.round(round)) + "\n")
 
     if plot_cm:
         # Ensure output directory exists

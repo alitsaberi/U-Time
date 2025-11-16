@@ -371,7 +371,6 @@ class LearningCurve(Callback):
         try:
             plot_all_training_curves(self.csv_regex,
                                      self.save_path,
-                                     logy=True,
                                      **self.plot_kwargs)
         except Exception as e:
             logger.error(f"Could not plot one or more training curves. Reason: {e}")
