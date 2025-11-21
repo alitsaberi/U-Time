@@ -12,6 +12,7 @@ from psg_utils.dataset.queue import LazyQueue
 from sklearn.metrics import f1_score
 from utime import Defaults
 from utime.evaluation.metrics import class_wise_kappa
+from utime.utils.post_processing import correct_light_sleep_bias
 from utime.utils.scriptutils.evaluate import get_splits_from_h5_dataset
 from utime.utils.system import find_and_set_gpus
 from utime.utils.scriptutils import (assert_project_folder,
@@ -83,6 +84,8 @@ def get_argparser():
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is 'evaluation_log'")
+    parser.add_argument("--correct_light_sleep_bias", action="store_true",
+                        help="Correct light sleep bias in predictions")
     return parser
 
 
@@ -335,6 +338,8 @@ def predict_on(study_pair, seq, model=None, model_func=None, n_aug=None,
             # Set predictions below threshold to -1 (unknown)
             pred_classes[max_probs < prob_threshold] = -1
             pred = pred_classes
+        elif correct_light_sleep_bias:
+            pred = correct_light_sleep_bias(pred)
         else:
             pred = pred.argmax(-1)
     return y, pred
@@ -566,3 +571,4 @@ def entry_func(args=None):
 
 if __name__ == "__main__":
     entry_func()
+    
