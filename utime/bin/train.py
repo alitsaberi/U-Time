@@ -27,6 +27,14 @@ from utime.utils.scriptutils.train import (get_train_and_val_datasets,
                                            remove_previous_session,
                                            get_all_dataset_hparams,
                                            init_default_project_structure)
+from utime.utils.wandb import (
+    add_wandb_arguments,
+    create_wandb_config,
+    init_wandb_run,
+    create_wandb_callbacks,
+    finish_wandb_run,
+    wandb as _wandb,
+)
 from psg_utils.dataset.queue.utils import get_data_queues
 
 logger = logging.getLogger(__name__)
@@ -119,6 +127,10 @@ def get_argparser():
     parser.add_argument("--train_on_val", action="store_true",
                         help="Include the validation set in the training set."
                              " Will force --no_val to be active.")
+    
+    # Add wandb arguments using shared utility
+    add_wandb_arguments(parser)
+    
     return parser
 
 
@@ -247,6 +259,36 @@ def run(args):
     hparams.set_group("/build/batch_shape", value=train_seq.batch_shape, overwrite=True)
     hparams.save_current()
 
+    # Initialize Weights & Biases (wandb) if enabled (same configuration flow as predict.py)
+    wandb_run = None
+    wandb_callbacks = []
+    
+    wandb_config, _, _ = create_wandb_config(hparams, args)
+    wandb_run = init_wandb_run(config=wandb_config, job_type="train")
+    if wandb_run:
+        # Create wandb callbacks (will be added to trainer later)
+        model_dir = Defaults.get_model_dir(project_dir)
+        wandb_callbacks = create_wandb_callbacks(wandb_config, hparams, model_dir)
+        logger.info(f"wandb enabled: {len(wandb_callbacks)} callback(s) created")
+
+        # Capture a rich config snapshot (args + derived values)
+        if _wandb is not None:
+            try:
+                _wandb.config.update(
+                    {
+                        **vars(args),
+                        "project_dir": project_dir,
+                        "preprocessed": bool(args.preprocessed),
+                        "n_classes": int(train_seq.n_classes),
+                        "batch_shape": tuple(train_seq.batch_shape),
+                        "train_queue_type": train_queue_type,
+                        "val_queue_type": val_queue_type,
+                    },
+                    allow_val_change=True,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update wandb config with args/derived values: {e}")
+
     if args.continue_training:
         # Prepare the project directory for continued training.
         # Please refer to the function docstring for details
@@ -276,13 +318,28 @@ def run(args):
     # Fit the model on a number of samples as specified in args
     samples_pr_epoch = get_samples_per_epoch(train_seq, args.max_train_samples_per_epoch)
 
+    # Prepare fit kwargs and add wandb callbacks if available
+    fit_kwargs = hparams["fit"].copy()
+    if wandb_callbacks:
+        # Prepend wandb callbacks to existing callbacks
+        existing_callbacks = fit_kwargs.get('callbacks', [])
+        fit_kwargs['callbacks'] = wandb_callbacks + existing_callbacks
+        logger.info(f"Added {len(wandb_callbacks)} wandb callback(s) to training")
+
     try:
         _ = trainer.fit(train=train_seq,
                         val=val_seq,
                         train_samples_per_epoch=samples_pr_epoch,
                         max_val_studies_per_dataset=args.max_val_studies_per_dataset,
-                        **hparams["fit"])
+                        **fit_kwargs)
     finally:
+        # Finish wandb run if it was initialized
+        if wandb_run:
+            try:
+                finish_wandb_run()
+            except Exception as e:
+                logger.warning(f"Error finishing wandb run: {e}")
+        
         # Stop loading processes and threads if existing
         if train_study_loader:
             train_study_loader.stop()

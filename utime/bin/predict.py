@@ -15,6 +15,10 @@ import json
 from argparse import ArgumentParser
 from utime import Defaults
 from utime.utils.system import find_and_set_gpus
+from utime.utils.scriptutils import (add_logging_file_handler, with_logging_level_wrapper,
+                                     assert_project_folder, get_dataset_from_regex_pattern,
+                                     get_dataset_splits_from_hparams, get_all_dataset_hparams)
+from utime.utils.wandb import finish_wandb_run, init_wandb_run, add_wandb_arguments, create_wandb_config
 from utime.bin.evaluate import (predict_on,
                                 prepare_output_dir, get_and_load_model,
                                 get_and_load_one_shot_model, get_sequencer,
@@ -24,9 +28,54 @@ from psg_utils.io.channels import filter_non_available_channels
 from psg_utils.io.channels.utils import get_channel_group_combinations
 from psg_utils.errors import CouldNotLoadError
 from psg_utils.io.header import extract_header
-from utime.utils.scriptutils import add_logging_file_handler, with_logging_level_wrapper
 
 logger = logging.getLogger(__name__)
+
+def _log_wandb_out_dir_artifact(wandb_run, out_dir: str, args) -> None:
+    """
+    Log the prediction output directory as a W&B artifact.
+
+    This logs files exactly as stored on disk under the resolved `out_dir`
+    (which may be derived from --out_dir + --data_split).
+    """
+    if not wandb_run or not getattr(args, "wandb_save_artifact", False):
+        return
+
+    out_dir = os.path.abspath(out_dir)
+    if not os.path.isdir(out_dir):
+        logger.warning(f"wandb artifact logging skipped - out_dir does not exist: {out_dir}")
+        return
+    try:
+        if not os.listdir(out_dir):
+            logger.warning(f"wandb artifact logging skipped - out_dir is empty: {out_dir}")
+            return
+    except Exception:
+        # If listing fails for some reason, still attempt to log the directory.
+        pass
+
+    try:
+        # Safe import even if wandb isn't installed; `wandb` will be None then.
+        from utime.utils.wandb import wandb as _wandb
+        if _wandb is None:
+            logger.warning("wandb artifact logging skipped - wandb is not available")
+            return
+
+        artifact_name = f"predictions-{wandb_run.name}"
+        artifact = _wandb.Artifact(
+            name=artifact_name,
+            type="predictions",
+            metadata={
+                "out_dir": out_dir,
+                "data_split": getattr(args, "data_split", None),
+                "folder_regex": getattr(args, "folder_regex", None),
+            },
+        )
+        # Preserve directory structure as stored under out_dir
+        artifact.add_dir(out_dir)
+        wandb_run.log_artifact(artifact)
+        logger.info(f"Logged W&B artifact '{artifact_name}' from out_dir: {out_dir}")
+    except Exception as e:
+        logger.warning(f"Failed to log W&B artifact from out_dir '{out_dir}': {e}")
 
 
 def get_argparser():
@@ -115,6 +164,33 @@ def get_argparser():
                         help="Specify how to group classes by summing probabilities. A comma-separated list of class mappings"
                              " in format 'source1:target1,source2:target2'. For example, '2:1,3:1' will sum probabilities "
                              "of classes 2 and 3 into class 1.")
+    
+    # Add wandb arguments using shared utility
+    add_wandb_arguments(parser)
+
+    # Optional output structuring arguments
+    parser.add_argument(
+        "--study_suffixes",
+        nargs="*",
+        type=str,
+        default=None,
+        help="If provided, and a study identifier ends with <sep><suffix> (e.g. '123_LEFT'), "
+             "predictions are saved to '<out_dir>/<suffix>/' and file names use the base id "
+             "(e.g. '123_PRED.npy') instead of the full identifier. "
+             "Suffix matching is done against the final token after splitting by --study_suffix_sep."
+    )
+    parser.add_argument(
+        "--study_suffix_sep",
+        type=str,
+        default="_",
+        help="Separator used when parsing --study_suffixes from study identifiers. Default: '_'"
+    )
+    parser.add_argument(
+        "--study_suffix_case_sensitive",
+        action="store_true",
+        help="If set, suffix matching for --study_suffixes is case sensitive. Default is case-insensitive."
+    )
+    
     return parser
 
 
@@ -166,6 +242,53 @@ def set_new_notch_filter_settings(dataset_hparams, notch_filter_settings):
     dataset_hparams['notch_filter_settings'] = notch_filter_settings
 
 
+def _split_study_identifier_suffix(identifier: str,
+                                  sep: str,
+                                  suffixes,
+                                  case_sensitive: bool):
+    """
+    Split a study identifier like '<base><sep><suffix>' into (base, suffix).
+    Returns (identifier, None) if no match.
+    """
+    if not identifier or not sep or not suffixes:
+        return identifier, None
+    if sep not in identifier:
+        return identifier, None
+
+    base, suffix = identifier.rsplit(sep, 1)
+    if not base or not suffix:
+        return identifier, None
+
+    if case_sensitive:
+        suffix_set = set(suffixes)
+        return (base, suffix) if suffix in suffix_set else (identifier, None)
+    else:
+        suffix_set = {s.lower() for s in suffixes}
+        return (base, suffix) if suffix.lower() in suffix_set else (identifier, None)
+
+
+def get_save_out_dir_and_stem(out_dir: str, identifier: str, args):
+    """
+    Decide where to save outputs and what filename stem to use.
+
+    Important: We do NOT modify sleep_study_pair.identifier, as that may be used
+    internally for data loading (sequencer/dataset keys). This function only
+    affects output structure and file naming.
+    """
+    if not getattr(args, "study_suffixes", None):
+        return out_dir, identifier
+
+    base, suffix = _split_study_identifier_suffix(
+        identifier=identifier,
+        sep=getattr(args, "study_suffix_sep", "_"),
+        suffixes=getattr(args, "study_suffixes", None),
+        case_sensitive=getattr(args, "study_suffix_case_sensitive", False)
+    )
+    if suffix is None:
+        return out_dir, identifier
+    return os.path.join(out_dir, suffix), base
+
+
 def get_prediction_channel_sets(sleep_study, dataset):
     """
     TODO
@@ -201,9 +324,6 @@ def get_prediction_channel_sets(sleep_study, dataset):
 
 
 def get_datasets(hparams, args):
-    from utime.utils.scriptutils import (get_dataset_from_regex_pattern,
-                                         get_dataset_splits_from_hparams,
-                                         get_all_dataset_hparams)
     # Get dictonary of dataset IDs to hparams
     all_dataset_hparams = get_all_dataset_hparams(hparams)
 
@@ -359,8 +479,12 @@ def group_class_labels(array, group_map):
 
 def run_pred_on_pair(sleep_study_pair, seq, model, model_func, out_dir, channel_sets, group_map, args):
     majority_voted = None
-    path_mj = get_save_path(out_dir, sleep_study_pair.identifier + "_PRED.npy", "majority")
-    path_true = get_save_path(out_dir, sleep_study_pair.identifier + "_TRUE.npy", None)
+    save_out_dir, save_stem = get_save_out_dir_and_stem(out_dir, sleep_study_pair.identifier, args)
+    if save_stem != sleep_study_pair.identifier:
+        logger.info(f"Saving outputs for '{sleep_study_pair.identifier}' as '{save_stem}' under '{save_out_dir}'")
+
+    path_mj = get_save_path(save_out_dir, save_stem + "_PRED.npy", "majority")
+    path_true = get_save_path(save_out_dir, save_stem + "_TRUE.npy", None)
     
     with sleep_study_pair.loaded_in_context():
         true = sleep_study_pair.get_all_hypnogram_periods()
@@ -376,8 +500,8 @@ def run_pred_on_pair(sleep_study_pair, seq, model, model_func, out_dir, channel_
     
     for k, (sub_folder_name, channels_to_load) in enumerate(channel_sets):
 
-        path_pred = get_save_path(out_dir, sleep_study_pair.identifier + "_PRED.npy", sub_folder_name)
-        path_weight = get_save_path(out_dir, sleep_study_pair.identifier + "_WEIGHT.npy", sub_folder_name)
+        path_pred = get_save_path(save_out_dir, save_stem + "_PRED.npy", sub_folder_name)
+        path_weight = get_save_path(save_out_dir, save_stem + "_WEIGHT.npy", sub_folder_name)
 
         if channels_to_load:
             logger.info(f" -- Channels: {channels_to_load}")
@@ -497,9 +621,16 @@ def run(args):
     """
     logger.info(f"Args dump: \n{vars(args)}")
     # Check project folder is valid
-    from utime.utils.scriptutils import assert_project_folder
     project_dir = os.path.abspath(Defaults.PROJECT_DIRECTORY)
     assert_project_folder(project_dir, evaluation=True)
+
+    # Get hyperparameters first (needed for wandb config)
+    hparams = YAMLHParams(Defaults.get_hparams_path(project_dir))
+    hparams["build"]["data_per_prediction"] = args.data_per_prediction
+    
+    # Initialize Weights & Biases if requested
+    wandb_config, _, _ = create_wandb_config(hparams, args)
+    wandb_run = init_wandb_run(config=wandb_config, job_type="predict")
 
     # Prepare output dir
     if not args.folder_regex:
@@ -507,9 +638,6 @@ def run(args):
     else:
         out_dir = args.out_dir
     prepare_output_dir(out_dir, True)
-
-    hparams = YAMLHParams(Defaults.get_hparams_path(project_dir))
-    hparams["build"]["data_per_prediction"] = args.data_per_prediction
     if args.channels:
         hparams["select_channels"] = args.channels
         hparams["channel_sampling_groups"] = None
@@ -528,8 +656,35 @@ def run(args):
     else:
         model = get_and_load_model(project_dir, hparams, args.weights_file_name)
 
+    # Get datasets once (also used for wandb config below)
+    datasets = get_datasets(hparams, args)
+
+    # If wandb enabled, capture a rich config snapshot (args + derived values)
+    if wandb_run:
+        try:
+            import wandb
+            dataset_identifiers = []
+            for ds_tuple in datasets:
+                ds = ds_tuple[0]
+                dataset_identifiers.append(getattr(ds, "identifier", str(ds)))
+
+            wandb.config.update(
+                {
+                    **vars(args),
+                    # Derived / convenient fields
+                    "project_dir": project_dir,
+                    "output_dir": os.path.abspath(out_dir),
+                    "datasets_predicted": dataset_identifiers,
+                    "data_per_prediction": args.data_per_prediction or hparams["sample_rate"] * hparams["period_length_sec"],
+                    "n_classes": hparams["build"]["n_classes"],
+                },
+                allow_val_change=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update wandb config with args/derived values: {e}")
+
     # Run pred on all datasets
-    for dataset in get_datasets(hparams, args):
+    for dataset in datasets:
         dataset = dataset[0]
         if "/" in dataset.identifier:
             # Multiple datasets, separate results into sub-folders
@@ -548,6 +703,14 @@ def run(args):
                  hparams=hparams,
                  group_map=group_map,
                  args=args)
+    
+    # Log prediction statistics to wandb if enabled
+    if wandb_run:
+        try:
+            _log_wandb_out_dir_artifact(wandb_run=wandb_run, out_dir=out_dir, args=args)
+            finish_wandb_run()
+        except Exception as e:
+            logger.warning(f"Failed to log prediction results to wandb: {e}")
 
 
 def entry_func(args=None):
