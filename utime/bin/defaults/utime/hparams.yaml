@@ -112,3 +112,22 @@ fit:
 
   # Callbacks
   callbacks: [*TB, *MCP, *TIMER, *CSV, *ES]
+
+# Weights & Biases (wandb) experiment tracking configuration
+# wandb is optional - install with: pip install utime[wandb] or pip install wandb
+wandb:
+  # Global settings (used by train, evaluate, predict)
+  enabled: false  # Set to true or use --wandb flag to enable experiment tracking
+  project: "u-time"  # W&B project name
+  entity: null  # W&B team/user (null = use default from wandb config)
+  name: null  # Run name (null = auto-generated)
+  group: null  # Group runs together (e.g., "cross-validation")
+  tags: []  # List of tags for organizing runs
+  notes: null  # Optional description of the run
+  
+  # Callback-specific settings (only used during training)
+  callbacks:
+    log_model: false  # Log model checkpoints as W&B artifacts (can be large)
+    log_freq: "epoch"  # Logging frequency: "epoch" or integer for batch-level logging
+    watch_model: true  # Use wandb.watch() to log gradients and parameters
+    watch_freq: 100  # How often to log gradients/parameters (in batches)

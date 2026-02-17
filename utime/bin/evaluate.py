@@ -20,6 +20,19 @@ from utime.utils.scriptutils import (assert_project_folder,
                                      with_logging_level_wrapper)
 from utime.evaluation.dataframe import (get_eval_df, add_to_eval_df,
                                         log_eval_df, with_grand_mean_col)
+from utime.utils.wandb import (
+    add_wandb_arguments,
+    create_wandb_config,
+    finish_wandb_run,
+    init_wandb_run,
+    wandb as _wandb,
+)
+from utime.utils.scriptutils.predict import sequence_predict_generator, predict_on_generator
+from utime.hyperparameters import YAMLHParams
+from utime.models.model_init import init_and_load_best_model, init_and_load_model
+from utime.evaluation.plotting import plot_and_save_hypnogram, plot_and_save_cm
+from utime.sequences import get_batch_sequence
+from utime.bin.cm import wake_trim
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +96,10 @@ def get_argparser():
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is 'evaluation_log'")
+
+    # Add wandb arguments using shared utility (same as predict.py)
+    add_wandb_arguments(parser)
+    
     return parser
 
 
@@ -131,7 +148,6 @@ def get_and_load_model(project_dir, hparams, weights_file_name=None, clear_previ
         Parameter-initialized model
     """
     if not weights_file_name:
-        from utime.models.model_init import init_and_load_best_model
         model, _ = init_and_load_best_model(
             hparams=hparams,
             model_dir=os.path.join(project_dir, "model"),
@@ -139,7 +155,6 @@ def get_and_load_model(project_dir, hparams, weights_file_name=None, clear_previ
             by_name=True
         )
     else:
-        from utime.models.model_init import init_and_load_model
         weights_file_name = os.path.join(project_dir, "model", weights_file_name)
         model = init_and_load_model(hparams=hparams,
                                     weights_file=weights_file_name,
@@ -181,7 +196,6 @@ def plot_hypnogram(out_dir, pred, id_, true=None):
     """
     Wrapper around hypnogram plotting function
     """
-    from utime.evaluation.plotting import plot_and_save_hypnogram
     plot_and_save_hypnogram(out_path=os.path.join(out_dir, "hypnogram.png"),
                             y_pred=pred,
                             y_true=true,
@@ -192,7 +206,6 @@ def plot_cm(out_dir, pred, true, n_classes, id_):
     """
     Wrapper around confusion matrix plotting function
     """
-    from utime.evaluation.plotting import plot_and_save_cm
     # Compute and plot CM
     plot_and_save_cm(out_path=os.path.join(out_dir, "cm.png"),
                      pred=pred,
@@ -228,7 +241,6 @@ def _predict_sequence(study_pair, seq, model, verbose=True):
         An array of predicted sleep stages for all periods in 'study_pair'
         Shape [n_periods, n_classes]
     """
-    from utime.utils.scriptutils.predict import sequence_predict_generator
     gen = seq.single_study_seq_generator(study_id=study_pair.identifier,
                                          overlapping=True)
     pred = sequence_predict_generator(model=model,
@@ -297,7 +309,6 @@ def predict_on(study_pair, seq, model=None, model_func=None, n_aug=None,
             raise NotImplementedError("Got callable for 'model_func' "
                                       "parameter, but did not receive a "
                                       "sequence object with margin > 0.")
-        from utime.utils.scriptutils.predict import predict_on_generator
         if n_aug:
             raise NotImplementedError("Test-time augmentation currently not"
                                       " supported for non-sequence models.")
@@ -358,7 +369,6 @@ def get_sequencer(dataset, hparams):
     # Wrap dataset in LazyQueue object
     dataset_queue = LazyQueue(dataset)
 
-    from utime.sequences import get_batch_sequence
     if 'fit' not in hparams:
         hparams['fit'] = {}
     hparams["fit"]["balanced_sampling"] = False
@@ -421,7 +431,6 @@ def run_pred_and_eval(dataset,
 
         if args.wake_trim_min:
             # Trim long periods of wake in start/end of true & prediction
-            from utime.bin.cm import wake_trim
             y, pred = wake_trim(pairs=[[y, pred]],
                                 wake_trim_min=args.wake_trim_min,
                                 period_length_sec=dataset.period_length_sec)[0]
@@ -498,22 +507,42 @@ def run(args):
     logger.info(f"Args dump: \n{vars(args)}")
     project_dir = os.path.abspath(Defaults.PROJECT_DIRECTORY)
     assert_project_folder(project_dir, evaluation=True)
-
-    # Prepare output dir
-    out_dir = get_out_dir(args.out_dir, args.data_split)
-    prepare_output_dir(out_dir, args.overwrite)
-
-    # Get hyperparameters and init all described datasets
-    from utime.hyperparameters import YAMLHParams
-
+    
+    # Get hyperparameters first (needed for wandb config)
     if args.preprocessed:
         yaml_path = Defaults.get_pre_processed_hparams_path(project_dir)
         dataset_func = get_splits_from_h5_dataset
     else:
         yaml_path = Defaults.get_hparams_path(project_dir)
         dataset_func = get_splits_from_all_datasets
-
+    
     hparams = YAMLHParams(yaml_path)
+    
+    # Initialize Weights & Biases if requested (same configuration flow as predict.py)
+    wandb_config, _, _ = create_wandb_config(hparams, args)
+    wandb_run = init_wandb_run(config=wandb_config, job_type="evaluate")
+
+    # Prepare output dir
+    out_dir = get_out_dir(args.out_dir, args.data_split)
+    prepare_output_dir(out_dir, args.overwrite)
+
+    # If wandb enabled, capture a rich config snapshot (args + derived values)
+    if wandb_run and _wandb is not None:
+        try:
+            _wandb.config.update(
+                {
+                    **vars(args),
+                    "project_dir": project_dir,
+                    "output_dir": os.path.abspath(out_dir),
+                    "data_split": args.data_split,
+                    "preprocessed": bool(args.preprocessed),
+                    "n_classes": hparams["build"].get("n_classes"),
+                },
+                allow_val_change=True,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update wandb config with args/derived values: {e}")
+
     if args.channels:
         hparams["select_channels"] = args.channels
         hparams["channel_sampling_groups"] = None
@@ -530,7 +559,7 @@ def run(args):
     else:
         model = get_and_load_model(project_dir, hparams, args.weights_file_name)
 
-    # Run predictions on all datasets
+    # Get datasets
     datasets = dataset_func(hparams=hparams, splits_to_load=(args.data_split,))
     eval_dirs = []
     for dataset in datasets:
@@ -554,6 +583,31 @@ def run(args):
                           args=args)
     if len(eval_dirs) > 1:
         cross_dataset_eval(eval_dirs, out_dir)
+    
+    # Log evaluation results to wandb if enabled
+    if wandb_run:
+        try:
+            # Log evaluation metrics from output directory
+            eval_csv_path = os.path.join(out_dir, "evaluation_dice.csv")
+            if os.path.exists(eval_csv_path):
+                import pandas as pd
+                eval_df = pd.read_csv(eval_csv_path)
+                
+                # Log per-class metrics
+                eval_metrics = {}
+                for col in eval_df.columns:
+                    if col != 'dataset' and col != 'subject_id':
+                        eval_metrics[f"eval/{col}"] = eval_df[col].mean()
+                
+                _wandb.log(eval_metrics)
+                logger.info(f"Logged {len(eval_metrics)} evaluation metrics to wandb")
+                
+                # Log evaluation table
+                _wandb.log({"eval/results_table": _wandb.Table(dataframe=eval_df)})
+            
+            finish_wandb_run()
+        except Exception as e:
+            logger.warning(f"Failed to log evaluation results to wandb: {e}")
 
 
 def entry_func(args=None):
