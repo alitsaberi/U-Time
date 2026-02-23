@@ -484,7 +484,6 @@ def run_pred_on_pair(sleep_study_pair, seq, model, model_func, out_dir, channel_
         logger.info(f"Saving outputs for '{sleep_study_pair.identifier}' as '{save_stem}' under '{save_out_dir}'")
 
     path_mj = get_save_path(save_out_dir, save_stem + "_PRED.npy", "majority")
-    path_true = get_save_path(save_out_dir, save_stem + "_TRUE.npy", None)
     
     with sleep_study_pair.loaded_in_context():
         true = sleep_study_pair.get_all_hypnogram_periods()
@@ -498,10 +497,14 @@ def run_pred_on_pair(sleep_study_pair, seq, model, model_func, out_dir, channel_
                 data_per_prediction=args.data_per_prediction
             )
     
+    # If we are writing to channel combination subfolders, save TRUE alongside each combo output
+    has_combo_folders = any(sub_folder_name is not None for sub_folder_name, _ in channel_sets)
+
     for k, (sub_folder_name, channels_to_load) in enumerate(channel_sets):
 
         path_pred = get_save_path(save_out_dir, save_stem + "_PRED.npy", sub_folder_name)
         path_weight = get_save_path(save_out_dir, save_stem + "_WEIGHT.npy", sub_folder_name)
+        path_true_combo = get_save_path(save_out_dir, save_stem + "_TRUE.npy", sub_folder_name) if has_combo_folders else None
 
         if channels_to_load:
             logger.info(f" -- Channels: {channels_to_load}")
@@ -534,20 +537,47 @@ def run_pred_on_pair(sleep_study_pair, seq, model, model_func, out_dir, channel_
                 save_file(path_weight, arr=weight_array, argmax=False)
             else:
                 logger.info(f"Weight file already exists at {path_weight}, skipping (use --overwrite to replace)")
+
+        if args.save_true and has_combo_folders:
+            if true is None:
+                raise ValueError(f"True values are not available for {sleep_study_pair.identifier}")
+
+            true_to_save = true
+            if group_map:
+                true_to_save = group_class_labels(true_to_save, group_map)
+
+            if not os.path.exists(path_true_combo) or args.overwrite:
+                logger.info(f"Saving true to {path_true_combo}")
+                save_file(path_true_combo, arr=true_to_save, argmax=False)
+            else:
+                logger.info(f"True file already exists at {path_true_combo}, skipping (use --overwrite to replace)")
     
     if args.save_true:
 
         if true is None:
             raise ValueError(f"True values are not available for {sleep_study_pair.identifier}")
 
+        true_to_save = true
         if group_map:
-            true = group_class_labels(true, group_map)
+            true_to_save = group_class_labels(true_to_save, group_map)
 
-        if not os.path.exists(path_true) or args.overwrite:
-            logger.info(f"Saving true to {path_true}")
-            save_file(path_true, arr=true, argmax=False)
+        if not has_combo_folders:
+            # Backwards compatible: if no combination subfolders are used, save at base level
+            path_true = get_save_path(save_out_dir, save_stem + "_TRUE.npy", None)
+            if not os.path.exists(path_true) or args.overwrite:
+                logger.info(f"Saving true to {path_true}")
+                save_file(path_true, arr=true_to_save, argmax=False)
+            else:
+                logger.info(f"True file already exists at {path_true}, skipping (use --overwrite to replace)")
         else:
-            logger.info(f"True file already exists at {path_true}, skipping (use --overwrite to replace)")
+            # If combination subfolders are used, also place TRUE in majority folder if majority output is requested
+            if args.majority:
+                path_true_mj = get_save_path(save_out_dir, save_stem + "_TRUE.npy", "majority")
+                if not os.path.exists(path_true_mj) or args.overwrite:
+                    logger.info(f"Saving true to {path_true_mj}")
+                    save_file(path_true_mj, arr=true_to_save, argmax=False)
+                else:
+                    logger.info(f"True file already exists at {path_true_mj}, skipping (use --overwrite to replace)")
     
     if args.majority:
         if not os.path.exists(path_mj) or args.overwrite:

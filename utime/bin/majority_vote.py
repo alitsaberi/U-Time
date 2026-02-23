@@ -2,7 +2,6 @@ import logging
 import os
 import numpy as np
 from argparse import ArgumentParser
-from scipy import stats
 from glob import glob
 from utime.utils.scriptutils import add_logging_file_handler
 
@@ -48,6 +47,35 @@ def get_argparser():
                         help="Temperature parameter for softmax fusion. Must be > 0. "
                              "Higher temperature = more uniform weights, lower = winner-take-all. "
                              "Typical range: 0.1-10, default is 2.0. Only used with --softmax-fusion.")
+    parser.add_argument(
+        "--n_classes",
+        type=int,
+        default=None,
+        help="Number of in-range classes. Used for tie-breaking preference of labels in range "
+             "[0, n_classes). Required for tie strategies that prefer in-range labels."
+    )
+    parser.add_argument(
+        "--tie_strategy",
+        type=str,
+        default="prefer_in_range_random",
+        choices=("prefer_in_range_random", "prefer_in_range_unknown", "unknown"),
+        help="How to resolve ties during hard majority voting. "
+             "'prefer_in_range_random': prefer labels in [0, n_classes), else pick randomly among tied. "
+             "'prefer_in_range_unknown': prefer labels in [0, n_classes), else set unknown. "
+             "'unknown': always set unknown on ties."
+    )
+    parser.add_argument(
+        "--unknown_label",
+        type=int,
+        default=None,
+        help="Label value to use when tie_strategy requires setting unknown."
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed used when tie_strategy picks randomly among tied labels."
+    )
     parser.add_argument("--overwrite", action='store_true',
                         help='Overwrite existing output files and log files.')
     parser.add_argument("--log_file", type=str, default=None,
@@ -70,10 +98,18 @@ def get_true_paths(dataset_dir):
     """
     Returns a dictionary of study-ID: true/target vector paths
     """
-    true_paths = glob(f'{dataset_dir}/*TRUE.np*')
-    return {
-        os.path.split(p)[-1].split("_TRUE")[0]: p for p in true_paths
-    }
+    # Support both:
+    # - old layout: dataset_dir/<study_id>_TRUE.npy
+    # - channel-combo layout: dataset_dir/<combo>/<study_id>_TRUE.npy
+    # - split layout: dataset_dir/<split>/<combo>/<study_id>_TRUE.npy (when called on split_dir)
+    true_paths = glob(os.path.join(dataset_dir, "*TRUE.np*"))
+    true_paths += glob(os.path.join(dataset_dir, "*", "*TRUE.np*"))
+    out = {}
+    for p in true_paths:
+        sid = os.path.split(p)[-1].split("_TRUE")[0]
+        # Keep first seen (stable enough) – all TRUE vectors should be identical across combos
+        out.setdefault(sid, p)
+    return out
 
 
 def get_prediction_paths(pred_dir):
@@ -111,14 +147,26 @@ def extract_combination_name(path, dataset_dir):
     return None
 
 
-def get_input_channel_combinations(dataset_dir, study_id, allowed_combinations=None, combination_weights=None):
+def get_input_channel_combinations(dataset_dir,
+                                   study_id,
+                                   allowed_combinations=None,
+                                   combination_weights=None,
+                                   exclude_combinations=None):
 
     # Find all prediction files for this study
     all_paths = glob(f'{dataset_dir}/*/*{study_id}_PRED.np*')
+    exclude_combinations = set(exclude_combinations or [])
     
     if allowed_combinations is None:
-        combination_names = [extract_combination_name(path, dataset_dir) for path in all_paths]
-        return combination_names, all_paths, [1] * len(combination_names)
+        combination_names = []
+        filtered_paths = []
+        for path in all_paths:
+            combination_name = extract_combination_name(path, dataset_dir)
+            if combination_name in exclude_combinations:
+                continue
+            combination_names.append(combination_name)
+            filtered_paths.append(path)
+        return combination_names, filtered_paths, [1] * len(filtered_paths)
     
     # Filter by allowed combinations
     # Extract combination name from path: dataset_dir/combination_name/study_id_PRED.npy
@@ -128,6 +176,8 @@ def get_input_channel_combinations(dataset_dir, study_id, allowed_combinations=N
     for path in all_paths:
         # Get the directory name (combination name) from the path
         combination_name = extract_combination_name(path, dataset_dir)
+        if combination_name in exclude_combinations:
+            continue
 
         if combination_name not in allowed_combinations:
             logger.debug(f"Skipping combination '{combination_name}' (not in allowed list)")
@@ -143,26 +193,39 @@ def get_input_channel_combinations(dataset_dir, study_id, allowed_combinations=N
 def get_weight_path(pred_path):
     return pred_path.replace("_PRED.npy", "_WEIGHT.npy").replace("_PRED.npz", "_WEIGHT.npy")
 
-def get_arrays(paths):
+def get_arrays(paths, trim_to_min_length=False):
     loaded = []
     element_wise_weights = []
+
     for i, arr_path in enumerate(paths):
         array = np.load(arr_path)
         loaded.append(array)
 
         weight_path = get_weight_path(arr_path)
-
         if os.path.exists(weight_path):
             weight_array = np.load(weight_path)
-
-            if weight_array.shape[0] != array.shape[0]:
-                raise ValueError(f"Weight array length {weight_array.shape[0]} doesn't match "
-                                f"prediction length {array.shape[0]} for channel {i}. ")
-
             element_wise_weights.append(weight_array)
-            print(f"element_wise_weights: {element_wise_weights}")
         else:
-            element_wise_weights.append(np.ones(array.shape[0]))
+            element_wise_weights.append(np.ones(array.shape[0], dtype=float))
+
+    # Handle length mismatches if requested
+    lengths = [a.shape[0] for a in loaded]
+    min_len = min(lengths) if lengths else 0
+    if any(length != min_len for length in lengths):
+        msg = f"Length mismatch across arrays: {lengths}"
+        if not trim_to_min_length:
+            raise ValueError(msg + " (set --trim_to_min_length to allow trimming)")
+        logger.warning(msg + f" - trimming all to min length {min_len}")
+        loaded = [a[:min_len] for a in loaded]
+        element_wise_weights = [w[:min_len] for w in element_wise_weights]
+
+    # Validate weights lengths now that optional trimming applied
+    for i, (arr, w) in enumerate(zip(loaded, element_wise_weights)):
+        if w.shape[0] != arr.shape[0]:
+            raise ValueError(
+                f"Weight array length {w.shape[0]} doesn't match prediction length {arr.shape[0]} "
+                f"for channel index {i}."
+            )
 
     return np.stack(loaded), np.stack(element_wise_weights)
 
@@ -232,60 +295,361 @@ def apply_weights(channel_arrs, weights):
     return np.stack(weighted_channel_arrs, axis=0)
 
 
-def run(args):
-    dataset_dirs = get_datasets(folder=args.dataset_dir)
+def _is_soft_prediction_array(arr: np.ndarray) -> bool:
+    """
+    Heuristic: soft predictions are (N, C) float-like arrays.
+    """
+    return isinstance(arr, np.ndarray) and arr.ndim == 2 and np.issubdtype(arr.dtype, np.floating)
 
-    for dataset, dataset_dir_path in dataset_dirs.items():
-        logger.info(f"Processing dataset '{dataset}'")
 
-        # Create majority vote folder
-        out_dir = f'{dataset_dir_path}/{args.out_folder_name}'
-        if not os.path.exists(out_dir):
-            os.mkdir(out_dir)
+def _to_hard_labels(arr: np.ndarray) -> np.ndarray:
+    """
+    Convert either hard labels (N,) or soft (N, C) to hard labels (N,).
+    """
+    if _is_soft_prediction_array(arr):
+        return arr.argmax(axis=-1)
+    if arr.ndim != 1:
+        raise ValueError(f"Expected hard labels to be 1D, got shape {arr.shape}")
+    return arr
 
-        # Get all study IDs
-        study_ids = set([os.path.split(s)[-1].split("_PRED")[0] for s in glob(dataset_dir_path + "/**/*PRED.npy")])
-        logger.info(f"Found {len(study_ids)} paths to study IDs")
+
+def _resolve_tie(tied_labels: np.ndarray,
+                 args,
+                 rng: np.random.Generator) -> int:
+    """
+    Resolve tie among tied_labels according to args.tie_strategy.
+    """
+    tied_labels = np.asarray(tied_labels)
+    if tied_labels.size == 0:
+        raise ValueError("No tied labels to resolve.")
+    if tied_labels.size == 1:
+        return int(tied_labels[0])
+
+    if args.tie_strategy == "unknown":
+        return int(args.unknown_label)
+
+    # prefer_in_range_* strategies
+    if args.n_classes is None:
+        in_range = tied_labels
+    else:
+        in_range = tied_labels[(tied_labels >= 0) & (tied_labels < args.n_classes)]
+    if in_range.size == 1:
+        return int(in_range[0])
+    if in_range.size > 1:
+        if args.tie_strategy == "prefer_in_range_random":
+            return int(rng.choice(in_range))
+        # prefer_in_range_unknown
+        return int(args.unknown_label)
+
+    # No in-range labels among tied
+    if args.tie_strategy == "prefer_in_range_random":
+        return int(rng.choice(tied_labels))
+    return int(args.unknown_label)
+
+
+def hard_majority_vote(label_matrix: np.ndarray, args, rng: np.random.Generator) -> np.ndarray:
+    """
+    Hard majority vote over a stack of hard-label vectors.
+
+    Args:
+        label_matrix: shape (n_votes, n_samples)
+    Returns:
+        majority labels: shape (n_samples,)
+    """
+    if label_matrix.ndim != 2:
+        raise ValueError(f"Expected label_matrix with shape (n_votes, n_samples), got {label_matrix.shape}")
+    n_votes, n_samples = label_matrix.shape
+    if n_votes == 0:
+        raise ValueError("No votes provided.")
+
+    out = np.empty((n_samples,), dtype=label_matrix.dtype)
+    for i in range(n_samples):
+        col = label_matrix[:, i]
+        labels, counts = np.unique(col, return_counts=True)
+        max_count = counts.max()
+        tied = labels[counts == max_count]
+        out[i] = _resolve_tie(tied, args=args, rng=rng)
+    return out
+
+
+def _detect_split_layout(dataset_dir_path: str) -> bool:
+    """
+    Detect whether dataset_dir_path contains suffix split folders.
+    Old layout:  dataset/<combination>/<study>_PRED.npy
+    Split layout: dataset/<split>/<combination>/<study>_PRED.npy (and dataset/<split>/<study>_TRUE.npy)
+    """
+    old = glob(os.path.join(dataset_dir_path, "*", "*_PRED.np*"))
+    split = glob(os.path.join(dataset_dir_path, "*", "*", "*_PRED.np*"))
+    # If both exist, prefer split layout if split-depth has more signal
+    return (len(split) > 0) and (len(old) == 0 or len(split) >= len(old))
+
+
+def _iter_split_dirs(dataset_dir_path: str):
+    for p in glob(os.path.join(dataset_dir_path, "*")):
+        if os.path.isdir(p):
+            yield p
+
+
+def _ensure_dir(path: str):
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+
+
+def _save_if_allowed(path_no_ext: str, arr: np.ndarray, overwrite: bool):
+    """
+    Save using numpy semantics, where np.save will append .npy if not present.
+    """
+    # Match existing behavior: majority_vote previously used no extension in out_path.
+    # We'll check for either <path> or <path>.npy existing.
+    existing = os.path.exists(path_no_ext) or os.path.exists(path_no_ext + ".npy")
+    if existing and not overwrite:
+        logger.warning(f"Output file at {path_no_ext}(.npy) exists and --overwrite not set. Skipping.")
+        return False
+    np.save(path_no_ext, arr)
+    return True
+
+
+def _load_true_if_exists(true_paths_map: dict, study_id: str):
+    p = true_paths_map.get(study_id)
+    if not p:
+        return None
+    return np.load(p)
+
+
+def _process_one_folder_as_dataset(dataset_dir_path: str, out_dir: str, args, rng: np.random.Generator):
+    """
+    Process a dataset folder in the old layout (no suffix split dirs).
+    """
+    _ensure_dir(out_dir)
+    # Avoid including already computed majority results as "inputs"
+    excluded_dirs = {args.out_folder_name, "majority"}
+    pred_paths = []
+    for p in glob(os.path.join(dataset_dir_path, "*", "*PRED.np*")):
+        combo = os.path.basename(os.path.dirname(p))
+        if combo in excluded_dirs:
+            continue
+        pred_paths.append(p)
+    study_ids = set([os.path.split(s)[-1].split("_PRED")[0] for s in pred_paths])
+    logger.info(f"Found {len(study_ids)} paths to study IDs")
+    true_paths = get_true_paths(dataset_dir_path)
+
+    for study_id in study_ids:
+        logger.info(f"Processing study {study_id}")
+
+        out_path = os.path.join(out_dir, f"{study_id}_PRED")
+        if os.path.exists(out_path) and not args.overwrite:
+            logger.warning(f"Output file at {out_path} exists and the --overwrite flag was not set. Skipping.")
+            continue
+
+        combination_names, channels, combination_weights = get_input_channel_combinations(
+            dataset_dir_path,
+            study_id,
+            allowed_combinations=args.channel_combinations,
+            combination_weights=args.combination_weights,
+            exclude_combinations=excluded_dirs,
+        )
+        logger.info(f"Using {len(channels)} combinations ({combination_names}) for study {study_id} with weights {combination_weights}")
+
+        if len(combination_names) == 0:
+            logger.warning(f"No channel combinations found for study {study_id}. Skipping.")
+            continue
+
+        channel_arrs, element_wise_weights = get_arrays(channels, trim_to_min_length=args.trim_to_min_length)
+
+        if args.soft:
+            if args.softmax_fusion:
+                softmax_weights = get_softmax_weights(channel_arrs, temperature=args.temperature)
+                channel_arrs = apply_weights(channel_arrs, softmax_weights)
+
+            channel_arrs = apply_weights(channel_arrs, combination_weights)
+            channel_arrs = apply_weights(channel_arrs, element_wise_weights)
+
+            mj = np.sum(channel_arrs, axis=0)
+            mj = mj / np.sum(mj, axis=1, keepdims=True)
+        else:
+            # Use custom majority to enforce tie strategy
+            labels = channel_arrs.astype(int)
+            mj = hard_majority_vote(labels, args=args, rng=rng)
+
+        logger.info(f"Saving majority with shape {mj.shape} to {out_path}")
+        np.save(out_path, mj)
+
+        # Also save true alongside majority if available
+        true = _load_true_if_exists(true_paths, study_id)
+        if true is not None:
+            true_out = os.path.join(out_dir, f"{study_id}_TRUE")
+            if args.trim_to_min_length and mj.shape[0] != true.shape[0]:
+                min_len = min(mj.shape[0], true.shape[0])
+                true = true[:min_len]
+            _save_if_allowed(true_out, true, overwrite=args.overwrite)
+
+
+def _process_split_dataset(dataset_dir_path: str, args, rng: np.random.Generator):
+    """
+    Process a dataset folder in the split layout:
+      dataset/<split>/<combination>/<study>_PRED.npy
+      dataset/<split>/<study>_TRUE.npy
+
+    Produces:
+      - per-split majority: dataset/<split>/<out_folder_name>/<study>_{PRED,TRUE}.npy
+      - overall across splits: dataset/<out_folder_name>/<study>_{PRED,TRUE}.npy
+    """
+    split_dirs = [d for d in _iter_split_dirs(dataset_dir_path)]
+    split_dirs = [d for d in split_dirs if os.path.isdir(d)]
+    logger.info(f"Detected split layout with {len(split_dirs)} split folders")
+
+    # First: per-split majority (same behavior as old, but under each split)
+    all_study_ids = set()
+    split_true_maps = {}
+    for split_dir in split_dirs:
+        split_name = os.path.basename(os.path.normpath(split_dir))
+        logger.info(f"Processing split '{split_name}'")
+
+        out_dir_split = os.path.join(split_dir, args.out_folder_name)
+        _ensure_dir(out_dir_split)
+
+        excluded_dirs = {args.out_folder_name, "majority"}
+        pred_paths = []
+        for p in glob(os.path.join(split_dir, "*", "*PRED.np*")):
+            combo = os.path.basename(os.path.dirname(p))
+            if combo in excluded_dirs:
+                continue
+            pred_paths.append(p)
+        study_ids = set([os.path.split(s)[-1].split("_PRED")[0] for s in pred_paths])
+        all_study_ids |= study_ids
+
+        true_paths = get_true_paths(split_dir)
+        split_true_maps[split_dir] = true_paths
 
         for study_id in study_ids:
-            logger.info(f"Processing study {study_id} for dataset {dataset}")
-
-            out_path = f'{out_dir}/{study_id}_PRED'
+            out_path = os.path.join(out_dir_split, f"{study_id}_PRED")
             if os.path.exists(out_path) and not args.overwrite:
                 logger.warning(f"Output file at {out_path} exists and the --overwrite flag was not set. Skipping.")
                 continue
 
             combination_names, channels, combination_weights = get_input_channel_combinations(
-                dataset_dir_path,
-                study_id, 
+                split_dir,
+                study_id,
                 allowed_combinations=args.channel_combinations,
                 combination_weights=args.combination_weights,
+                exclude_combinations=excluded_dirs,
             )
-            logger.info(f"Using {len(channels)} combinations ({combination_names}) for study {study_id} with weights {combination_weights}")
-            
             if len(combination_names) == 0:
-                logger.warning(f"No channel combinations found for study {study_id}. Skipping.")
+                logger.warning(f"No channel combinations found for study {study_id} in split '{split_name}'. Skipping.")
                 continue
-            
-            channel_arrs, element_wise_weights = get_arrays(channels)
+
+            channel_arrs, element_wise_weights = get_arrays(channels, trim_to_min_length=args.trim_to_min_length)
 
             if args.soft:
-
                 if args.softmax_fusion:
                     softmax_weights = get_softmax_weights(channel_arrs, temperature=args.temperature)
                     channel_arrs = apply_weights(channel_arrs, softmax_weights)
 
                 channel_arrs = apply_weights(channel_arrs, combination_weights)
                 channel_arrs = apply_weights(channel_arrs, element_wise_weights)
-
                 mj = np.sum(channel_arrs, axis=0)
-                # Normalize per row so each row sums to 1
                 mj = mj / np.sum(mj, axis=1, keepdims=True)
             else:
-                mj = stats.mode(channel_arrs, axis=0)[0].squeeze()
+                labels = channel_arrs.astype(int)
+                mj = hard_majority_vote(labels, args=args, rng=rng)
 
-            logger.info(f"Saving majority with shape {mj.shape} to {out_path}")
+            logger.info(f"Saving split majority '{split_name}' with shape {mj.shape} to {out_path}")
             np.save(out_path, mj)
+
+            # Save split true alongside split majority (if available)
+            true = _load_true_if_exists(true_paths, study_id)
+            if true is not None:
+                true_out = os.path.join(out_dir_split, f"{study_id}_TRUE")
+                if args.trim_to_min_length and mj.shape[0] != true.shape[0]:
+                    min_len = min(mj.shape[0], true.shape[0])
+                    true = true[:min_len]
+                _save_if_allowed(true_out, true, overwrite=args.overwrite)
+
+    # Second: overall across splits (same fusion as per-split: soft fusion or hard majority)
+    out_dir_overall = os.path.join(dataset_dir_path, args.out_folder_name)
+    _ensure_dir(out_dir_overall)
+
+    for study_id in sorted(all_study_ids):
+        # Collect per-split majority predictions (keep raw for soft fusion)
+        split_preds = []
+        split_trues = []
+
+        for split_dir in split_dirs:
+            split_out_pred = os.path.join(split_dir, args.out_folder_name, f"{study_id}_PRED.npy")
+            if not os.path.exists(split_out_pred):
+                continue
+            arr = np.load(split_out_pred)
+            split_preds.append(arr)
+
+            true_paths = split_true_maps.get(split_dir) or get_true_paths(split_dir)
+            tpath = true_paths.get(study_id)
+            if tpath and os.path.exists(tpath):
+                split_trues.append(_to_hard_labels(np.load(tpath)))
+
+        if len(split_preds) == 0:
+            continue
+
+        # Align lengths (first dimension)
+        lengths = [a.shape[0] for a in split_preds]
+        min_len = min(lengths)
+        if any(length != min_len for length in lengths):
+            msg = f"Split majority prediction length mismatch for study {study_id}: {lengths}"
+            if not args.trim_to_min_length:
+                raise ValueError(msg + " (set --trim_to_min_length to allow trimming)")
+            logger.warning(msg + f" - trimming to {min_len}")
+            split_preds = [a[:min_len] for a in split_preds]
+
+        if args.soft:
+            # Soft fusion across splits: stack (n_splits, N, C), sum and normalize (equal weight per split)
+            stacked = np.stack(split_preds, axis=0)
+            if stacked.ndim == 3:
+                overall_pred = np.sum(stacked, axis=0) / stacked.shape[0]
+                overall_pred = overall_pred / np.sum(overall_pred, axis=1, keepdims=True)
+            else:
+                # Per-split saved hard labels (1D) despite --soft; treat as hard and majority
+                overall_pred = hard_majority_vote(stacked.astype(np.int64), args=args, rng=rng)
+        else:
+            hard_preds = [_to_hard_labels(a) for a in split_preds]
+            pred_stack = np.stack(hard_preds, axis=0)
+            overall_pred = hard_majority_vote(pred_stack, args=args, rng=rng)
+
+        out_path_pred = os.path.join(out_dir_overall, f"{study_id}_PRED")
+        logger.info(f"Saving overall majority (across splits) for {study_id} with shape {overall_pred.shape} to {out_path_pred}")
+        _save_if_allowed(out_path_pred, overall_pred, overwrite=args.overwrite)
+
+        # Overall true: hard majority across split trues (if available)
+        if len(split_trues) > 0:
+            lengths_t = [a.shape[0] for a in split_trues]
+            min_len_t = min(lengths_t)
+            if any(length != min_len_t for length in lengths_t):
+                msg = f"Split TRUE length mismatch for study {study_id}: {lengths_t}"
+                if not args.trim_to_min_length:
+                    raise ValueError(msg + " (set --trim_to_min_length to allow trimming)")
+                logger.warning(msg + f" - trimming to {min_len_t}")
+                split_trues = [a[:min_len_t] for a in split_trues]
+            true_stack = np.stack(split_trues, axis=0)
+            overall_true = hard_majority_vote(true_stack, args=args, rng=rng)
+            out_path_true = os.path.join(out_dir_overall, f"{study_id}_TRUE")
+            _save_if_allowed(out_path_true, overall_true, overwrite=args.overwrite)
+
+
+def run(args):
+    rng = np.random.default_rng(args.seed)
+    dataset_dirs = get_datasets(folder=args.dataset_dir)
+
+    for dataset, dataset_dir_path in dataset_dirs.items():
+        logger.info(f"Processing dataset '{dataset}'")
+
+        if _detect_split_layout(dataset_dir_path):
+            _process_split_dataset(dataset_dir_path=dataset_dir_path, args=args, rng=rng)
+        else:
+            out_dir = os.path.join(dataset_dir_path, args.out_folder_name)
+            _process_one_folder_as_dataset(
+                dataset_dir_path=dataset_dir_path,
+                out_dir=out_dir,
+                args=args,
+                rng=rng
+            )
 
 
 def assert_args(args):
@@ -313,6 +677,9 @@ def assert_args(args):
         raise ValueError(f"--temperature must be > 0, got {args.temperature}. "
                         "Temperature controls the softmax distribution: "
                         "lower values favor winner-take-all, higher values favor uniform weights.")
+
+    if args.tie_strategy in ("prefer_in_range_unknown", "unknown") and args.unknown_label is None:
+        raise ValueError("--unknown_label is required when tie_strategy sets unknown on ties.")
 
 
 def entry_func(args=None):
