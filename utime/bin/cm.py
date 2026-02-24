@@ -22,6 +22,32 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CMAP = "Blues"
 
+# Define standard mappings for different classification scenarios
+MAPPINGS = {
+    2: {  # Binary: Wake vs Sleep
+        0: "Wake",
+        1: "Sleep"
+    },
+    3: {  # 3-class: Wake, NREM, REM
+        0: "Wake",
+        1: "NREM",
+        2: "REM"
+    },
+    4: {  # 4-class: Wake, Light, Deep, REM
+        0: "Wake",
+        1: "Light",
+        2: "Deep",
+        3: "REM"
+    },
+    5: {  # 5-class: Wake, Light, Deep, REM, Unknown
+        0: "Wake",
+        1: "N1",
+        2: "N2",
+        3: "N3",
+        4: "REM"
+    }
+}
+
 
 def get_argparser():
     """
@@ -256,41 +282,6 @@ def glob_to_metrics_df(true_pattern: str,
             logger.info(f"Applied custom class grouping. New labels: {labels}")
         except (ValueError, AttributeError) as e:
             raise ValueError(f"Invalid group_classes format. Expected 'source:target,...' (e.g. '2:1,3:1'). Got: {group_classes}") from e
-    
-    if ignore_classes:
-        labels = sorted(list(set(labels) - set(ignore_classes)))
-        logger.info(f"Ignoring class(es) {ignore_classes}. Remaining classes: {labels}")
-        
-        # Also filter the data
-        keep_mask = ~np.isin(true, ignore_classes)
-        true = true[keep_mask]
-        pred = pred[keep_mask]
-    
-    # Define standard mappings for different classification scenarios
-    MAPPINGS = {
-        2: {  # Binary: Wake vs Sleep
-            0: "Wake",
-            1: "Sleep"
-        },
-        3: {  # 3-class: Wake, NREM, REM
-            0: "Wake",
-            1: "NREM",
-            2: "REM"
-        },
-        4: {  # 4-class: Wake, Light, Deep, REM
-            0: "Wake",
-            1: "Light",
-            2: "Deep",
-            3: "REM"
-        },
-        5: {  # 5-class: Wake, Light, Deep, REM, Unknown
-            0: "Wake",
-            1: "N1",
-            2: "N2",
-            3: "N3",
-            4: "REM"
-        }
-    }
     
     # Determine number of classes from the filtered data
     num_classes = len(labels)

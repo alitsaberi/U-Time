@@ -85,19 +85,7 @@ def plot_confusion_matrix(y_true, y_pred, n_classes,
         cm /= cm.sum(axis=1, keepdims=True)
 
     # Use provided labels or generate default ones
-    if class_labels:
-        labels = class_labels
-    else:
-        # Set labels based on number of classes
-        if n_classes == 3:
-            labels = ["Wake", "NREM", "REM"]
-        elif n_classes == 4:
-            labels = ["Wake", "Light", "Deep", "REM"]
-        elif n_classes == 5:
-            labels = ["Wake", "N1", "N2", "N3", "REM"]
-        else:
-            # Default case
-            labels = [f"Class {i}" for i in range(n_classes)]
+    labels = class_labels or [f"Class {i}" for i in range(n_classes)]
 
     fig, ax = plt.subplots(figsize=(8, 6))
     im = ax.imshow(cm, interpolation='nearest', cmap=plt.get_cmap(cmap))
