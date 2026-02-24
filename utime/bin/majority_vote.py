@@ -372,6 +372,40 @@ def hard_majority_vote(label_matrix: np.ndarray, args, rng: np.random.Generator)
     return out
 
 
+def _fuse_stacked_predictions(stacked_arrs, args, rng: np.random.Generator,
+                              combination_weights=None, element_wise_weights=None):
+    """
+    Fuse a stack of predictions (channels or splits) with soft or hard fusion.
+
+    Args:
+        stacked_arrs: (n_sources, N, C) for soft or (n_sources, N) for hard
+        args: script args (soft, softmax_fusion, temperature, tie_strategy, etc.)
+        rng: random generator for tie-breaking
+        combination_weights: optional list of n_sources scalars; default equal
+        element_wise_weights: optional (n_sources, N) or list of n_sources (N,) arrays; default ones
+
+    Returns:
+        (N, C) for soft or (N,) for hard
+    """
+    n = stacked_arrs.shape[0]
+    if args.soft:
+        if stacked_arrs.ndim == 2:
+            return hard_majority_vote(stacked_arrs.astype(np.int64), args=args, rng=rng)
+        if args.softmax_fusion:
+            softmax_weights = get_softmax_weights(stacked_arrs, temperature=args.temperature)
+            stacked_arrs = apply_weights(stacked_arrs, softmax_weights)
+        combination_weights = combination_weights if combination_weights is not None else [1.0] * n
+        if element_wise_weights is None:
+            element_wise_weights = [np.ones(stacked_arrs.shape[1], dtype=float)] * n
+        stacked_arrs = apply_weights(stacked_arrs, combination_weights)
+        stacked_arrs = apply_weights(stacked_arrs, element_wise_weights)
+        mj = np.sum(stacked_arrs, axis=0)
+        mj = mj / np.sum(mj, axis=1, keepdims=True)
+        return mj
+    hard = np.array([_to_hard_labels(a) for a in stacked_arrs])
+    return hard_majority_vote(hard, args=args, rng=rng)
+
+
 def _detect_split_layout(dataset_dir_path: str) -> bool:
     """
     Detect whether dataset_dir_path contains suffix split folders.
@@ -456,20 +490,11 @@ def _process_one_folder_as_dataset(dataset_dir_path: str, out_dir: str, args, rn
 
         channel_arrs, element_wise_weights = get_arrays(channels, trim_to_min_length=args.trim_to_min_length)
 
-        if args.soft:
-            if args.softmax_fusion:
-                softmax_weights = get_softmax_weights(channel_arrs, temperature=args.temperature)
-                channel_arrs = apply_weights(channel_arrs, softmax_weights)
-
-            channel_arrs = apply_weights(channel_arrs, combination_weights)
-            channel_arrs = apply_weights(channel_arrs, element_wise_weights)
-
-            mj = np.sum(channel_arrs, axis=0)
-            mj = mj / np.sum(mj, axis=1, keepdims=True)
-        else:
-            # Use custom majority to enforce tie strategy
-            labels = channel_arrs.astype(int)
-            mj = hard_majority_vote(labels, args=args, rng=rng)
+        mj = _fuse_stacked_predictions(
+            channel_arrs, args, rng,
+            combination_weights=combination_weights,
+            element_wise_weights=element_wise_weights,
+        )
 
         logger.info(f"Saving majority with shape {mj.shape} to {out_path}")
         np.save(out_path, mj)
@@ -490,82 +515,34 @@ def _process_split_dataset(dataset_dir_path: str, args, rng: np.random.Generator
       dataset/<split>/<combination>/<study>_PRED.npy
       dataset/<split>/<study>_TRUE.npy
 
+    Each split is processed like a one-folder dataset (shared code path).
     Produces:
       - per-split majority: dataset/<split>/<out_folder_name>/<study>_{PRED,TRUE}.npy
       - overall across splits: dataset/<out_folder_name>/<study>_{PRED,TRUE}.npy
     """
-    split_dirs = [d for d in _iter_split_dirs(dataset_dir_path)]
-    split_dirs = [d for d in split_dirs if os.path.isdir(d)]
+    split_dirs = [d for d in _iter_split_dirs(dataset_dir_path) if os.path.isdir(d)]
     logger.info(f"Detected split layout with {len(split_dirs)} split folders")
 
-    # First: per-split majority (same behavior as old, but under each split)
+    # Per-split majority: treat each split as a one-folder dataset (shared code)
     all_study_ids = set()
     split_true_maps = {}
     for split_dir in split_dirs:
         split_name = os.path.basename(os.path.normpath(split_dir))
         logger.info(f"Processing split '{split_name}'")
-
         out_dir_split = os.path.join(split_dir, args.out_folder_name)
-        _ensure_dir(out_dir_split)
-
-        excluded_dirs = {args.out_folder_name, "majority"}
-        pred_paths = []
-        for p in glob(os.path.join(split_dir, "*", "*PRED.np*")):
-            combo = os.path.basename(os.path.dirname(p))
-            if combo in excluded_dirs:
-                continue
-            pred_paths.append(p)
+        _process_one_folder_as_dataset(
+            dataset_dir_path=split_dir,
+            out_dir=out_dir_split,
+            args=args,
+            rng=rng,
+        )
+        # Collect study IDs and true paths for overall fusion
+        pred_paths = glob(os.path.join(out_dir_split, "*_PRED.np*"))
         study_ids = set([os.path.split(s)[-1].split("_PRED")[0] for s in pred_paths])
         all_study_ids |= study_ids
+        split_true_maps[split_dir] = get_true_paths(split_dir)
 
-        true_paths = get_true_paths(split_dir)
-        split_true_maps[split_dir] = true_paths
-
-        for study_id in study_ids:
-            out_path = os.path.join(out_dir_split, f"{study_id}_PRED")
-            if os.path.exists(out_path) and not args.overwrite:
-                logger.warning(f"Output file at {out_path} exists and the --overwrite flag was not set. Skipping.")
-                continue
-
-            combination_names, channels, combination_weights = get_input_channel_combinations(
-                split_dir,
-                study_id,
-                allowed_combinations=args.channel_combinations,
-                combination_weights=args.combination_weights,
-                exclude_combinations=excluded_dirs,
-            )
-            if len(combination_names) == 0:
-                logger.warning(f"No channel combinations found for study {study_id} in split '{split_name}'. Skipping.")
-                continue
-
-            channel_arrs, element_wise_weights = get_arrays(channels, trim_to_min_length=args.trim_to_min_length)
-
-            if args.soft:
-                if args.softmax_fusion:
-                    softmax_weights = get_softmax_weights(channel_arrs, temperature=args.temperature)
-                    channel_arrs = apply_weights(channel_arrs, softmax_weights)
-
-                channel_arrs = apply_weights(channel_arrs, combination_weights)
-                channel_arrs = apply_weights(channel_arrs, element_wise_weights)
-                mj = np.sum(channel_arrs, axis=0)
-                mj = mj / np.sum(mj, axis=1, keepdims=True)
-            else:
-                labels = channel_arrs.astype(int)
-                mj = hard_majority_vote(labels, args=args, rng=rng)
-
-            logger.info(f"Saving split majority '{split_name}' with shape {mj.shape} to {out_path}")
-            np.save(out_path, mj)
-
-            # Save split true alongside split majority (if available)
-            true = _load_true_if_exists(true_paths, study_id)
-            if true is not None:
-                true_out = os.path.join(out_dir_split, f"{study_id}_TRUE")
-                if args.trim_to_min_length and mj.shape[0] != true.shape[0]:
-                    min_len = min(mj.shape[0], true.shape[0])
-                    true = true[:min_len]
-                _save_if_allowed(true_out, true, overwrite=args.overwrite)
-
-    # Second: overall across splits (same fusion as per-split: soft fusion or hard majority)
+    # Overall across splits (same fusion as per-split: soft fusion or hard majority)
     out_dir_overall = os.path.join(dataset_dir_path, args.out_folder_name)
     _ensure_dir(out_dir_overall)
 
@@ -599,19 +576,8 @@ def _process_split_dataset(dataset_dir_path: str, args, rng: np.random.Generator
             logger.warning(msg + f" - trimming to {min_len}")
             split_preds = [a[:min_len] for a in split_preds]
 
-        if args.soft:
-            # Soft fusion across splits: stack (n_splits, N, C), sum and normalize (equal weight per split)
-            stacked = np.stack(split_preds, axis=0)
-            if stacked.ndim == 3:
-                overall_pred = np.sum(stacked, axis=0) / stacked.shape[0]
-                overall_pred = overall_pred / np.sum(overall_pred, axis=1, keepdims=True)
-            else:
-                # Per-split saved hard labels (1D) despite --soft; treat as hard and majority
-                overall_pred = hard_majority_vote(stacked.astype(np.int64), args=args, rng=rng)
-        else:
-            hard_preds = [_to_hard_labels(a) for a in split_preds]
-            pred_stack = np.stack(hard_preds, axis=0)
-            overall_pred = hard_majority_vote(pred_stack, args=args, rng=rng)
+        stacked = np.stack(split_preds, axis=0)
+        overall_pred = _fuse_stacked_predictions(stacked, args, rng)
 
         out_path_pred = os.path.join(out_dir_overall, f"{study_id}_PRED")
         logger.info(f"Saving overall majority (across splits) for {study_id} with shape {overall_pred.shape} to {out_path_pred}")
