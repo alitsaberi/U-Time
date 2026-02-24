@@ -282,6 +282,13 @@ def glob_to_metrics_df(true_pattern: str,
             1: "Light",
             2: "Deep",
             3: "REM"
+        },
+        5: {  # 5-class: Wake, Light, Deep, REM, Unknown
+            0: "Wake",
+            1: "N1",
+            2: "N2",
+            3: "N3",
+            4: "REM"
         }
     }
     
@@ -336,7 +343,7 @@ def glob_to_metrics_df(true_pattern: str,
     cm = pd.DataFrame(data=cm,
                       index=["True {}".format(mapping[i]) for i in labels],
                       columns=["Pred {}".format(mapping[i]) for i in labels])
-    p = "Raw" if not normalized else "Normed"
+    p = "raw" if not normalized else "normed"
     logger.info(f"{p} Confusion Matrix:\n" + str(cm.round(round)) + "\n")
 
     if plot_cm:
@@ -345,7 +352,7 @@ def glob_to_metrics_df(true_pattern: str,
         plot_path = os.path.join(out_dir, f"cm_{p}.png")
         # Get labels in correct order for plotting
         label_names = [mapping[i] for i in labels]
-        plot_and_save_cm(plot_path, pred, true, len(labels), title=global_scores_str, cmap=cmap, class_labels=label_names)
+        plot_and_save_cm(plot_path, pred, true, len(labels), normalized=normalized, title=global_scores_str, cmap=cmap, class_labels=label_names)
         logger.info(f"Saved confusion matrix plot to: {plot_path}")
 
     return metrics
