@@ -56,11 +56,11 @@ def get_argparser():
                         help="Path to a model weights file to initialize from.")
     parser.add_argument("--overwrite", action='store_true',
                         help='Overwrite previous training session in the project path including all models and logs.')
-    parser.add_argument("--log_file", type=str, default="training_log",
+    parser.add_argument("--log_file", type=str, default="train.log",
                         help="Relative path (from Defaults.LOG_DIR as specified by ut --log_dir flag) of "
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
-                             "Default is 'training_log'")
+                             "Default is 'train.log'")
     parser.add_argument("--datasets", nargs="*", default=None,
                         help="Optional space-sepparated list of dataset IDs as specified in hyperparameters file to "
                              "consider for training and validation (unless --no_val flag is set). Ignores all other "

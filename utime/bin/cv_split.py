@@ -85,7 +85,7 @@ def get_argparser():
                         help="Overwrite existing log files (see --log_file). "
                              "This flag does NOT tell the script to overwrite an existing folder "
                              "at --out_dir, such folder must be manually deleted if intended.")
-    parser.add_argument("--log_file", type=str, default=None,
+    parser.add_argument("--log_file", type=str, default="split.log",
                         help="Relative path (from Defaults.LOG_DIR as specified by ut --log_dir flag) of "
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "

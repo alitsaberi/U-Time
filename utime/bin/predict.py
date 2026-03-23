@@ -150,11 +150,11 @@ def get_argparser():
                         help="Skip already predicted files.")
     parser.add_argument("--overwrite", action='store_true',
                         help='Overwrite previous results at the output folder and previous log files')
-    parser.add_argument("--log_file", type=str, default="prediction_log",
+    parser.add_argument("--log_file", type=str, default="predict.log",
                         help="Relative path (from Defaults.LOG_DIR as specified by ut --log_dir flag) of "
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
-                             "Default is 'prediction_log'")
+                             "Default is 'predict.log'")
     parser.add_argument("--move_study_to_folder_on_error", type=str, default=None,
                         help="Optional path to a folder to which sleep study subject directories should be "
                              "moved (including all content files) when the study cannot be loaded for 1 or more "

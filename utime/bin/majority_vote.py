@@ -70,19 +70,15 @@ def get_argparser():
         default=None,
         help="Label value to use when tie_strategy requires setting unknown."
     )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=0,
-        help="Random seed used when tie_strategy picks randomly among tied labels."
-    )
     parser.add_argument("--overwrite", action='store_true',
                         help='Overwrite existing output files and log files.')
-    parser.add_argument("--log_file", type=str, default=None,
+    parser.add_argument("--log_file", type=str, default="majority_vote.log",
                         help="Relative path (from Defaults.LOG_DIR as specified by ut --log_dir flag) of "
                              "output log file for this script. "
                              "Set to an empty string to not save any logs to file for this run. "
                              "Default is None (no log file)")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Random seed for numpy.random.default_rng().")
     return parser
 
 
@@ -520,7 +516,11 @@ def _process_split_dataset(dataset_dir_path: str, args, rng: np.random.Generator
       - per-split majority: dataset/<split>/<out_folder_name>/<study>_{PRED,TRUE}.npy
       - overall across splits: dataset/<out_folder_name>/<study>_{PRED,TRUE}.npy
     """
-    split_dirs = [d for d in _iter_split_dirs(dataset_dir_path) if os.path.isdir(d)]
+    excluded = {args.out_folder_name, "majority"}
+    split_dirs = [
+        d for d in _iter_split_dirs(dataset_dir_path)
+        if os.path.isdir(d) and os.path.basename(os.path.normpath(d)) not in excluded
+    ]
     logger.info(f"Detected split layout with {len(split_dirs)} split folders")
 
     # Per-split majority: treat each split as a one-folder dataset (shared code)
