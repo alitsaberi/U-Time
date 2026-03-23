@@ -12,9 +12,37 @@ def get_eval_df(sequencer):
 
 
 def add_to_eval_df(eval_dict, id_, values):
-    mean = np.nanmean(values)
-    values = [mean] + list(values)
-    eval_dict[id_] = values
+    """
+    Add a per-class metric vector to an evaluation DataFrame.
+
+    The evaluation DataFrame is expected to have index:
+        ["mean"] + <one row per class label>
+
+    Some metric functions (e.g., sklearn f1_score with average=None and no
+    explicit labels) may return vectors shorter than the number of classes if
+    only a subset of classes is present. To keep the DataFrame shape stable, we
+    pad/truncate to the expected number of classes (filling missing entries with
+    NaN) before computing the mean.
+    """
+    # Normalize to 1D float array
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+
+    # Align to expected per-class length if eval_dict has an index
+    expected = None
+    try:
+        expected = max(0, len(eval_dict.index) - 1)  # exclude "mean"
+    except Exception:
+        expected = None
+
+    if expected is not None and expected >= 0 and arr.size != expected:
+        aligned = np.full(shape=(expected,), fill_value=np.nan, dtype=np.float64)
+        n = min(expected, arr.size)
+        if n:
+            aligned[:n] = arr[:n]
+        arr = aligned
+
+    mean = np.nanmean(arr) if arr.size else np.nan
+    eval_dict[id_] = [mean] + arr.tolist()
 
 
 def with_grand_mean_col(eval_dict, col_name="Grand mean"):
