@@ -7,12 +7,15 @@ import logging
 import os
 from pathlib import Path
 from typing import Dict, List, Tuple
+import json
 import numpy as np
 import pandas as pd
 from argparse import ArgumentParser
 from glob import glob
 from sklearn.metrics import confusion_matrix, f1_score, cohen_kappa_score
 from scipy import stats
+from utime import Defaults
+from utime.hyperparameters import YAMLHParams
 from utime.evaluation import concatenate_true_pred_pairs
 from utime.evaluation import (f1_scores_from_cm, precision_scores_from_cm,
                               recall_scores_from_cm)
@@ -117,6 +120,31 @@ def get_argparser():
     return parser
 
 
+def _write_overall_metrics(out_dir: Path, metrics: Dict[str, float], round_: int) -> None:
+    """
+    Write overall (global) metrics in a machine- and human-readable format.
+
+    This complements the log output and is intended for downstream experiment
+    aggregators (learning curves, grid searches, etc.).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "round": int(round_),
+        **{k: (float(v) if v is not None else None) for k, v in metrics.items()},
+        **{f"{k}_rounded": (None if v is None else float(np.round(v, round_))) for k, v in metrics.items()},
+    }
+    (out_dir / "overall_metrics.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    txt = (
+        "OVERALL METRICS\n"
+        "--------------\n"
+        f"Accuracy: {payload.get('accuracy_rounded')}\n"
+        f"Macro F1: {payload.get('macro_f1_rounded')}\n"
+        f"Micro F1: {payload.get('micro_f1_rounded')}\n"
+        f"Kappa:    {payload.get('kappa_rounded')}\n"
+    )
+    (out_dir / "overall_metrics.txt").write_text(txt)
+
+
 def _parse_ignore_classes(raw):
     """Parse --ignore_classes values. Each can be 'N' (ignore class N) or 'N:label' (mapping for hypnogram).
     Returns (ignore_classes: List[int] or None, class_mapping: Dict[int, str] or None).
@@ -133,6 +161,52 @@ def _parse_ignore_classes(raw):
         else:
             mapping[int(s)] = f"Class {s}"
     return mapping
+
+
+def _parse_group_classes_map(group_classes: str) -> Dict[int, int]:
+    """Parse group mapping from 'source:target,source:target'."""
+    if not group_classes:
+        return {}
+    group_map = {}
+    try:
+        for pair in group_classes.split(","):
+            source, target = map(int, pair.split(":"))
+            group_map[source] = target
+    except (ValueError, AttributeError) as e:
+        raise ValueError(
+            "Invalid group_classes format. Expected 'source:target,...' "
+            f"(e.g. '2:1,3:1'). Got: {group_classes}"
+        ) from e
+    return group_map
+
+
+def _get_original_n_classes(default: int = None) -> int:
+    """
+    Read n_classes from the current project hyperparameters.
+    Falls back to `default` when project/hparams are unavailable.
+    """
+    try:
+        hparams_path = Defaults.get_hparams_path()
+        if hparams_path and os.path.exists(hparams_path):
+            hparams = YAMLHParams(hparams_path, no_version_control=True)
+            n_classes = hparams.get("build", {}).get("n_classes")
+            if n_classes is not None:
+                return int(n_classes)
+    except Exception as e:
+        logger.warning(f"Could not read n_classes from project hparams: {e}")
+    if default is not None:
+        return int(default)
+    raise ValueError("Could not infer original n_classes from hparams and no default was provided.")
+
+
+def _remap_to_compact_classes(arr: np.ndarray, class_ids: List[int]) -> np.ndarray:
+    """
+    Remap arbitrary class ids (e.g. [0,1,3,4]) to compact ids [0..K-1].
+    """
+    if arr.size == 0:
+        return arr.astype(np.int64, copy=False)
+    remap = {cid: i for i, cid in enumerate(class_ids)}
+    return np.vectorize(remap.get, otypes=[np.int64])(arr)
 
 
 def _get_eval_df_from_ids(study_ids, labels):
@@ -258,6 +332,14 @@ def glob_to_metrics_df(true_pattern: str,
     logger.info("Loading {} pairs...".format(len(pairs)))
     np_pairs = _get_numpy_arrays(pairs)
     all_classes = set()
+    group_map = _parse_group_classes_map(group_classes)
+    ignore_classes = sorted(list(ignore_class_mapping.keys())) if ignore_class_mapping else []
+    fallback_n_classes = max(MAPPINGS.keys())
+    original_n_classes = _get_original_n_classes(default=fallback_n_classes)
+    base_mapping = MAPPINGS.get(
+        original_n_classes,
+        {i: f"Class {i}" for i in range(original_n_classes)}
+    )
 
     for study_id, (true, pred) in np_pairs.items():
 
@@ -290,31 +372,22 @@ def glob_to_metrics_df(true_pattern: str,
                         "".format(wake_trim_min, period_length_sec))
             true, pred = wake_trim(true, pred, wake_trim_min, period_length_sec)
 
-        if group_classes:
-            try:
-                group_map = {}
-                for pair in group_classes.split(","):
-                    source, target = map(int, pair.split(":"))
-                    group_map[source] = target
-                # First pass: Map everything to temporary values to avoid conflicts
-                # Create temp mapping using negative numbers
-                temp_map = {source: -(i + 1) for i, (source, _) in enumerate(group_map.items())}
-                for source, temp in temp_map.items():
-                    true = np.where(true == source, temp, true)
-                    pred = np.where(pred == source, temp, pred)
-                
-                # Second pass: Map to final values
-                final_map = {temp_map[source]: target for source, target in group_map.items()}
-                for temp, target in final_map.items():
-                    true = np.where(true == temp, target, true)
-                    pred = np.where(pred == temp, target, pred)
-                
-                # Update labels with all unique target values from the mapping
-                classes = sorted(list(set(group_map.values())))
-                logger.info(f"Applied custom class grouping. New classes: {classes}")
-                pred_probs = None  # Hypnodensity not supported with group_classes
-            except (ValueError, AttributeError) as e:
-                raise ValueError(f"Invalid group_classes format. Expected 'source:target,...' (e.g. '2:1,3:1'). Got: {group_classes}") from e
+        if group_map:
+            # First pass: Map everything to temporary values to avoid conflicts
+            temp_map = {source: -(i + 1) for i, (source, _) in enumerate(group_map.items())}
+            for source, temp in temp_map.items():
+                true = np.where(true == source, temp, true)
+                pred = np.where(pred == source, temp, pred)
+
+            # Second pass: Map to final values
+            final_map = {temp_map[source]: target for source, target in group_map.items()}
+            for temp, target in final_map.items():
+                true = np.where(true == temp, target, true)
+                pred = np.where(pred == temp, target, pred)
+
+            classes = sorted(list(set(group_map.values())))
+            logger.info(f"Applied custom class grouping. New classes: {classes}")
+            pred_probs = None  # Hypnodensity not supported with group_classes
 
 
         # Detect unique classes in the data
@@ -326,7 +399,6 @@ def glob_to_metrics_df(true_pattern: str,
         classes = sorted(pred_classes)
 
         if per_study_plots:
-            mapping = MAPPINGS[len(classes)].copy()
             pair_out = out_dir / study_id
             pair_out.mkdir(parents=True, exist_ok=True)
             plot_and_save_hypnogram(
@@ -334,15 +406,12 @@ def glob_to_metrics_df(true_pattern: str,
                 pred,
                 y_true=true,
                 id_=study_id,
-                class_mapping=mapping,
+                class_mapping=base_mapping,
                 unmapped_class_mapping=ignore_class_mapping,
                 y_pred_probs=pred_probs,
             )
 
         if ignore_class_mapping:
-
-            ignore_classes = list(ignore_class_mapping.keys())
-
             classes = sorted(list(set(classes) - set(ignore_classes)))
             logger.info(f"Ignoring class(es) {ignore_classes}. Remaining classes: {classes}")
             
@@ -355,11 +424,17 @@ def glob_to_metrics_df(true_pattern: str,
         np_pairs[study_id] = (true, pred)
 
     all_classes = sorted(all_classes)
-    num_classes = len(all_classes)
     out_dir = Path(out_dir)
-    mapping = MAPPINGS[num_classes]
 
-    labels = [mapping[i] for i in all_classes]
+    # Build class-id list from original model classes, then apply grouping and ignore.
+    class_ids = list(range(original_n_classes))
+    if group_map:
+        class_ids = sorted(set(group_map.get(i, i) for i in class_ids))
+    if ignore_classes:
+        class_ids = [i for i in class_ids if i not in ignore_classes]
+
+    num_classes = len(class_ids)
+    labels = [base_mapping.get(i, f"Class {i}") for i in class_ids]
 
     # Per-study evaluation and optional plots (Dice, kappa, hypnograms, per-study CMs)
     if write_eval:
@@ -367,17 +442,23 @@ def glob_to_metrics_df(true_pattern: str,
         kappa_eval_df = _get_eval_df_from_ids(np_pairs.keys(), labels)
         
         for study_id, (true, pred) in np_pairs.items():
-            
+            if true.size == 0 or pred.size == 0:
+                logger.warning(f"Study '{study_id}' has no samples after filtering; skipping per-study metrics.")
+                continue
+            true_compact = _remap_to_compact_classes(true, class_ids)
+            pred_compact = _remap_to_compact_classes(pred, class_ids)
+
             dice_pr_class = f1_score(
-                y_true=true,
-                y_pred=pred,
+                y_true=true_compact,
+                y_pred=pred_compact,
+                labels=list(range(num_classes)),
                 average=None,
                 zero_division=1,
             )
             add_to_eval_df(dice_eval_df, study_id, values=dice_pr_class)
 
             kappa_pr_class = class_wise_kappa(
-                true, pred, n_classes=num_classes
+                true_compact, pred_compact, n_classes=num_classes
             )
             add_to_eval_df(kappa_eval_df, study_id, values=kappa_pr_class)
 
@@ -386,8 +467,8 @@ def glob_to_metrics_df(true_pattern: str,
                 pair_out.mkdir(parents=True, exist_ok=True)
                 plot_and_save_cm(
                     str(pair_out / "cm.png"),
-                    pred,
-                    true,
+                    pred_compact,
+                    true_compact,
                     num_classes,
                     id_=study_id,
                     normalized=True,
@@ -413,19 +494,33 @@ def glob_to_metrics_df(true_pattern: str,
                 txt="EVALUATION KAPPA SCORES",
             )
 
-    # Concatenate data
+    # Concatenate data and remap to compact contiguous class ids.
     true, pred = map(lambda x: x.astype(np.uint8).reshape(-1, 1), concatenate_true_pred_pairs(pairs=list(np_pairs.values())))
+    if true.size == 0 or pred.size == 0:
+        raise ValueError("No samples left for evaluation after filtering/grouping; check --ignore_classes/--group_classes.")
+    true = _remap_to_compact_classes(true, class_ids)
+    pred = _remap_to_compact_classes(pred, class_ids)
 
     # Print macro metrics
+    acc = float((true == pred).mean())
+    macro_f1 = float(f1_score(true, pred, average="macro"))
+    micro_f1 = float(f1_score(true, pred, average="micro"))
+    kappa = float(cohen_kappa_score(true, pred))
+
     global_scores_str = (
-        f"Accuracy: {np.round((true == pred).mean(), round)}\n"
-        f"Macro F1: {np.round(f1_score(true, pred, average='macro'), round)}\n"
-        f"Micro F1: {np.round(f1_score(true, pred, average='micro'), round)}\n"
-        f"Kappa:    {np.round(cohen_kappa_score(true, pred), round)}"
+        f"Accuracy: {np.round(acc, round)}\n"
+        f"Macro F1: {np.round(macro_f1, round)}\n"
+        f"Micro F1: {np.round(micro_f1, round)}\n"
+        f"Kappa:    {np.round(kappa, round)}"
     )
     logger.info(f"Unweighted global scores:\n{global_scores_str}")
+    _write_overall_metrics(
+        out_dir,
+        {"accuracy": acc, "macro_f1": macro_f1, "micro_f1": micro_f1, "kappa": kappa},
+        round_=round,
+    )
 
-    cm = confusion_matrix(true, pred)
+    cm = confusion_matrix(true, pred, labels=list(range(num_classes)))
 
     # Print stage-wise metrics
     f1 = f1_scores_from_cm(cm)
