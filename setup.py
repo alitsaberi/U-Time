@@ -39,6 +39,11 @@ setup(
     install_requires=requirements,
     extras_require={
         'wandb': ['wandb>=0.16.0'],
+        'onnx': [
+            'tf2onnx',
+            'onnx',
+            'onnxruntime',
+        ],
     },
     classifiers=['Environment :: Console',
                  'Operating System :: POSIX',
