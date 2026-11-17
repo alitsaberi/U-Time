@@ -413,6 +413,18 @@ ut predict --folder_regex '../datasets/sedf_sc/SC400[1-2]E0' \
            --out_dir high_res_pred \
            --data_per_prediction 384 \
            --one_shot
+
+<b># Export for inference outside this repo (ONNX or TensorFlow SavedModel)</b>
+<b># Also writes model.yaml (sample rate, shapes, class labels) next to the artifact</b>
+<b># Sliding-window / training shape:</b>
+ut export --format onnx
+ut export --format tf
+<b># Fixed one-shot length:</b>
+ut export --format onnx --n_periods 1200
+<b># High-resolution predictions (e.g. every 3s at 128 Hz):</b>
+ut export --format onnx --n_periods 1200 --data_per_prediction 384
+<b># Variable-length one-shot (USleep only):</b>
+ut export --format tf --n_periods dynamic
 </pre>
 
 
