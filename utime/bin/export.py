@@ -9,6 +9,9 @@ outside this repository. Supports via --n_periods:
 - 'dynamic': variable-length one-shot (USleep only)
 
 ONNX export may optionally apply onnxruntime dynamic quantization.
+
+Always writes a sibling metadata file ``model.yaml`` next to the artifact
+(same directory as the ONNX file, or inside the TF SavedModel directory).
 """
 
 import logging
@@ -16,6 +19,8 @@ import os
 import shutil
 from argparse import ArgumentParser, ArgumentTypeError
 from pathlib import Path
+
+from ruamel.yaml import YAML
 
 from utime import Defaults
 from utime.hyperparameters import YAMLHParams
@@ -27,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ONNX_NAME = "model.onnx"
 DEFAULT_TF_DIR_NAME = "tf"
+DEFAULT_META_NAME = "model.yaml"
 # Models known to support batch_shape[1] = None for variable-length one-shot.
 DYNAMIC_PERIOD_MODELS = frozenset({"USleep"})
 N_PERIODS_DYNAMIC = "dynamic"
@@ -149,6 +155,85 @@ def _default_out_path(project_dir: str, fmt: str) -> str:
     if fmt == "onnx":
         return os.path.join(project_dir, "model", DEFAULT_ONNX_NAME)
     return os.path.join(project_dir, "model", DEFAULT_TF_DIR_NAME)
+
+
+def _meta_yaml_path(out_path: str, fmt: str) -> str:
+    """
+    Sidecar path: model.yaml in the ONNX file's directory, or inside the TF
+    SavedModel directory.
+    """
+    if fmt == "tf" or os.path.isdir(out_path):
+        return os.path.join(out_path, DEFAULT_META_NAME)
+    return os.path.join(os.path.dirname(out_path) or ".", DEFAULT_META_NAME)
+
+
+def _resolve_sample_rate_hz(hparams, project_dir: str):
+    rate = hparams.get("set_sample_rate")
+    if rate is None:
+        rate = hparams.get("sample_rate")
+    if rate is not None:
+        return float(rate)
+
+    datasets = hparams.get("datasets") or {}
+    for rel_path in datasets.values():
+        path = rel_path
+        if not os.path.isabs(path):
+            path = os.path.join(Defaults.get_hparams_dir(project_dir), path)
+        if not os.path.exists(path):
+            continue
+        ds = YAMLHParams(path, no_version_control=True)
+        rate = ds.get("set_sample_rate")
+        if rate is None:
+            rate = ds.get("sample_rate")
+        if rate is not None:
+            return float(rate)
+    return None
+
+
+def _class_labels(model, hparams):
+    n_classes = int(getattr(model, "n_classes", None) or hparams["build"]["n_classes"])
+    mapping = Defaults.get_class_int_to_stage_string()
+    return [mapping.get(i, str(i)) for i in range(n_classes)]
+
+
+def build_export_metadata(model, hparams, project_dir: str, n_periods_arg):
+    """
+    Collect inference-facing metadata for the model.yaml sidecar.
+    """
+    if n_periods_arg == N_PERIODS_DYNAMIC:
+        n_periods_per_window = None
+    else:
+        n_periods_per_window = int(getattr(model, "n_periods", None) or hparams["build"]["batch_shape"][1])
+
+    sample_rate_hz = _resolve_sample_rate_hz(hparams, project_dir)
+    if sample_rate_hz is None:
+        logger.warning(
+            "Could not resolve sample_rate_hz from hparams or dataset configs; "
+            "writing null in model.yaml."
+        )
+
+    return {
+        "sample_rate_hz": sample_rate_hz,
+        "n_periods_per_window": n_periods_per_window,
+        "n_samples_per_period": int(model.input_dims),
+        "n_channels": int(model.n_channels),
+        "n_samples_per_prediction": int(model.data_per_prediction),
+        "class_labels": _class_labels(model, hparams),
+    }
+
+
+def write_export_metadata(meta: dict, meta_path: str):
+    meta_path = os.path.abspath(meta_path)
+    parent = os.path.dirname(meta_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    yaml = YAML()
+    yaml.default_flow_style = False
+    yaml.width = 120
+    logger.info(f"Writing export metadata to: {meta_path}")
+    with open(meta_path, "w") as f:
+        yaml.dump(meta, f)
+    return meta_path
 
 
 def _make_input_signature(model):
@@ -324,7 +409,11 @@ def run(args):
 
     out_path = args.out_path or _default_out_path(project_dir, args.format)
     out_path = os.path.abspath(out_path)
+    meta_path = _meta_yaml_path(out_path, args.format)
     _ensure_out_path_writable(out_path, args.overwrite)
+    # For TF, meta lives inside out_path; wiping the dir already clears it.
+    if args.format == "onnx":
+        _ensure_out_path_writable(meta_path, args.overwrite)
 
     if args.format == "onnx":
         exported_path = export_to_onnx(
@@ -351,6 +440,14 @@ def run(args):
             os.replace(tmp_out, exported_path)
     else:
         export_to_tf(model, out_path)
+
+    meta = build_export_metadata(
+        model=model,
+        hparams=hparams,
+        project_dir=project_dir,
+        n_periods_arg=args.n_periods,
+    )
+    write_export_metadata(meta, meta_path)
 
     logger.info("Done.")
 

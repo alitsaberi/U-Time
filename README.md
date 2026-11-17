@@ -415,6 +415,7 @@ ut predict --folder_regex '../datasets/sedf_sc/SC400[1-2]E0' \
            --one_shot
 
 <b># Export for inference outside this repo (ONNX or TensorFlow SavedModel)</b>
+<b># Also writes model.yaml (sample rate, shapes, class labels) next to the artifact</b>
 <b># Sliding-window / training shape:</b>
 ut export --format onnx
 ut export --format tf
