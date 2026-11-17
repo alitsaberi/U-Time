@@ -62,11 +62,16 @@ class OutputReshape(Layer):
 
     def call(self, inputs, **kwargs):
         shape = shape_safe(inputs)
+        n_classes = inputs.shape[-1]
+        # Variable-length one-shot: period axis is dynamic (n_periods is None).
+        # After period-resolution pooling this is typically [batch, n_periods, n_classes].
+        if self.n_periods is None:
+            return tf.reshape(inputs, [shape[0], -1, n_classes])
         n_pred = int(shape[1] // self.n_periods)
-        shape = [shape[0], self.n_periods or shape[1], n_pred, inputs.shape[-1]]
+        out_shape = [shape[0], self.n_periods, n_pred, n_classes]
         if n_pred == 1:
-            shape.pop(2)
-        return tf.reshape(inputs, shape=shape)
+            out_shape.pop(2)
+        return tf.reshape(inputs, shape=out_shape)
 
 
 class PadStartToEvenLength(Layer):
