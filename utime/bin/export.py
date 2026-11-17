@@ -93,6 +93,15 @@ def get_argparser():
         "variable-length one-shot (USleep only).",
     )
     parser.add_argument(
+        "--data_per_prediction",
+        type=int,
+        default=None,
+        help="Override hparams build/data_per_prediction (how many samples are pooled "
+        "into one predicted period). Same meaning as predict / predict_one. "
+        "If omitted, uses build/data_per_prediction from hparams (or defaults to "
+        "input_dims in the model).",
+    )
+    parser.add_argument(
         "--opset",
         type=int,
         default=13,
@@ -250,6 +259,9 @@ def _make_input_signature(model):
 
 
 def _validate_args(args):
+    if args.data_per_prediction is not None and args.data_per_prediction < 1:
+        raise ValueError("--data_per_prediction must be a positive integer.")
+
     if args.format == "tf":
         onnx_only = []
         if args.quantize != "none":
@@ -403,6 +415,10 @@ def run(args):
     assert_project_folder(project_dir, evaluation=True)
 
     hparams = YAMLHParams(Defaults.get_hparams_path(project_dir))
+
+    if args.data_per_prediction is not None:
+        hparams["build"]["data_per_prediction"] = int(args.data_per_prediction)
+        logger.info(f"Using data_per_prediction={args.data_per_prediction} for export.")
 
     find_and_set_gpus(args.num_gpus, args.force_gpus)
     model = _load_model_for_export(project_dir, hparams, args)

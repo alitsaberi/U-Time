@@ -421,6 +421,8 @@ ut export --format onnx
 ut export --format tf
 <b># Fixed one-shot length:</b>
 ut export --format onnx --n_periods 1200
+<b># High-resolution predictions (e.g. every 3s at 128 Hz):</b>
+ut export --format onnx --n_periods 1200 --data_per_prediction 384
 <b># Variable-length one-shot (USleep only):</b>
 ut export --format tf --n_periods dynamic
 </pre>
